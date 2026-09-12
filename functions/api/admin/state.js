@@ -22,10 +22,17 @@ export async function onRequestGet({ request, env }) {
   const year = Number(url.searchParams.get('year') || env.DEFAULT_YEAR || 2026);
   try {
     if (env.GOOGLE_SHEETS_SPREADSHEET_ID && env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-      const wb = await readWorkbook(env, canonicalNames);
+      const wb = await readWorkbook(env, canonicalNames, year);
       if (Object.keys(wb.sheets).length) {
         return json({ ok: true, source: 'google-sheets', year, payload: { ...wb, meta: { year, sheetCount: Object.keys(wb.sheets).length }, activeYear: year } });
       }
+      return json({
+        ok: false,
+        code: 'YEAR_NOT_INITIALIZED',
+        message: `TA ${year} belum memiliki kertas kerja pada database Google Sheets.`,
+        year,
+        availableTitles: wb.availableTitles || []
+      }, 404);
     }
     return json({ ok: true, source: 'seed', year, payload: seedPayload(year) });
   } catch (e) {
@@ -42,7 +49,7 @@ export async function onRequestPut({ request, env }) {
     if (!(env.GOOGLE_SHEETS_SPREADSHEET_ID && env.GOOGLE_SERVICE_ACCOUNT_JSON)) {
       return json({ ok: false, message: 'Google Sheets belum dikonfigurasi di backend. Simpan lokal tidak diaktifkan pada mode aman ini.' }, 503);
     }
-    await writeWorkbook(env, payload);
+    await writeWorkbook(env, payload, Number(body?.year || payload?.meta?.year || 2026));
     return json({ ok: true, savedAt: new Date().toISOString(), source: 'google-sheets' });
   } catch (e) {
     return json({ ok: false, message: e.message }, 500);
