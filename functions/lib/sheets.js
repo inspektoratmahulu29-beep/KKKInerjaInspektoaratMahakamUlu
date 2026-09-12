@@ -1,10 +1,21 @@
 import { getGoogleAccessToken } from './google.js';
 
-export async function sheetsRequest(env, path, init = {}) {
+const API_ROOT = 'https://sheets.googleapis.com/v4';
+const DEFAULT_COLS = 'ZZ';
+
+function q(name) {
+  return `'${String(name).replace(/'/g, "''")}'`;
+}
+
+async function request(env, path, init = {}) {
   const token = await getGoogleAccessToken(env);
-  const res = await fetch(`https://sheets.googleapis.com/v4/${path}`, {
+  const res = await fetch(`${API_ROOT}/${path}`, {
     ...init,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers || {}) }
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...(init.headers || {})
+    }
   });
   const text = await res.text();
   let data;
@@ -13,49 +24,144 @@ export async function sheetsRequest(env, path, init = {}) {
   return data;
 }
 
-export async function getSpreadsheetMetadata(env) {
-  return sheetsRequest(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}?fields=spreadsheetId,sheets(properties(sheetId,title,index))`);
+export async function getSpreadsheet(env) {
+  if (!env.GOOGLE_SHEETS_SPREADSHEET_ID) throw new Error('GOOGLE_SHEETS_SPREADSHEET_ID belum diatur');
+  return request(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}?fields=spreadsheetId,sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))`);
 }
 
-export async function readWorkbook(env, sheetNames) {
-  const ranges = sheetNames.map(n => `'${String(n).replace(/'/g, "''")}'`);
-  const meta = await getSpreadsheetMetadata(env);
-  const available = new Set((meta.sheets || []).map(s => s.properties.title));
-  const wanted = sheetNames.filter(n => available.has(n));
-  if (!wanted.length) return { meta, sheets: {} };
-  const qs = wanted.map(n => `ranges=${encodeURIComponent(`'${n.replace(/'/g, "''")}'`)}`).join('&');
-  const data = await sheetsRequest(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchGet?majorDimension=ROWS&${qs}`);
-  const sheets = {};
-  for (const vr of data.valueRanges || []) {
-    const title = String(vr.range || '').split('!')[0].replace(/^'/, '').replace(/'$/, '').replace(/''/g, "'");
-    const values = vr.values || [];
-    sheets[title] = { name: title, values, rows: values.length, cols: Math.max(0, ...values.map(r => r.length)), formulas: {} };
+function normalizeName(name) {
+  return String(name ?? '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+export function yearSheetName(year, canonical, existingTitles = []) {
+  const exact = existingTitles.find(t => t === canonical);
+  if (exact && Number(year) === 2026) return exact;
+  const prefixed = `${Number(year)}__${canonical}`;
+  const existingPrefixed = existingTitles.find(t => t === prefixed);
+  return existingPrefixed || prefixed;
+}
+
+export function resolveExistingTitle(year, canonical, existingTitles) {
+  const exact = existingTitles.find(t => normalizeName(t) === normalizeName(canonical));
+  if (exact && Number(year) === 2026) return exact;
+  const pref = `${Number(year)}__${canonical}`;
+  const prefHit = existingTitles.find(t => normalizeName(t) === normalizeName(pref));
+  return prefHit || null;
+}
+
+async function ensureSheets(env, targetTitles, currentSheets) {
+  const existing = new Set(currentSheets.map(s => s.properties.title));
+  const missing = [...new Set(targetTitles)].filter(t => !existing.has(t));
+  if (!missing.length) return currentSheets;
+  const requests = missing.map(title => ({ addSheet: { properties: { title } } }));
+  await request(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}:batchUpdate`, {
+    method: 'POST',
+    body: JSON.stringify({ requests })
+  });
+  const meta = await getSpreadsheet(env);
+  return meta.sheets || [];
+}
+
+export async function readWorkbook(env, canonicalNames, year = 2026) {
+  const meta = await getSpreadsheet(env);
+  const currentSheets = meta.sheets || [];
+  const titles = currentSheets.map(s => s.properties.title);
+  const resolved = canonicalNames
+    .map(name => ({ canonical: name, actual: resolveExistingTitle(year, name, titles) }))
+    .filter(x => x.actual);
+
+  if (!resolved.length) {
+    return {
+      meta,
+      sheets: {},
+      missing: canonicalNames,
+      availableTitles: titles
+    };
   }
-  return { meta, sheets };
+
+  const ranges = resolved.map(x => `${q(x.actual)}!A:${DEFAULT_COLS}`);
+  const qs = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
+  const data = await request(
+    env,
+    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchGet?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE&${qs}`
+  );
+
+  const sheets = {};
+  for (let i = 0; i < resolved.length; i++) {
+    const item = resolved[i];
+    const vr = data.valueRanges?.[i] || {};
+    const values = vr.values || [];
+    sheets[item.canonical] = {
+      name: item.canonical,
+      googleTitle: item.actual,
+      values,
+      rows: values.length,
+      cols: Math.max(0, ...values.map(r => r.length)),
+      formulas: {}
+    };
+  }
+
+  const missing = canonicalNames.filter(n => !sheets[n]);
+  return { meta, sheets, missing, availableTitles: titles };
 }
 
-function formulaValue(sheet, r, c, v) {
-  const addr = (()=>{ let n=c+1, s=''; while(n){const q=(n-1)%26;s=String.fromCharCode(65+q)+s;n=Math.floor((n-1)/26);} return s+(r+1); })();
-  return sheet?.formulas?.[addr] || (v === null || v === undefined ? '' : v);
-}
-
-export async function writeWorkbook(env, payload) {
+export async function writeWorkbook(env, payload, year = 2026) {
   const data = payload?.sheets || {};
   const names = Object.keys(data);
-  if (!names.length) return { updated: 0 };
+  if (!names.length) return { updated: 0, created: 0 };
 
-  // Clear values only, preserving the spreadsheet's formatting/merged cells.
-  await sheetsRequest(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchClear`, {
-    method: 'POST',
-    body: JSON.stringify({ ranges: names.map(name => `'${name.replace(/'/g, "''")}'!A:ZZ`) })
-  });
+  const meta = await getSpreadsheet(env);
+  let currentSheets = meta.sheets || [];
+  const titles = currentSheets.map(s => s.properties.title);
 
-  const values = names.map(name => {
-    const sheet = data[name];
-    const rows = (sheet.values || []).map((row, r) => row.map((v, c) => formulaValue(sheet, r, c, v)));
-    return { range: `'${name.replace(/'/g, "''")}'!A1`, majorDimension: 'ROWS', values: rows };
-  });
-  const url = `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchUpdate`;
-  return sheetsRequest(env, url, { method: 'POST', body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: values }) });
+  const targetMap = {};
+  for (const name of names) {
+    const existing = resolveExistingTitle(year, name, titles);
+    targetMap[name] = existing || `${Number(year)}__${name}`;
+  }
+
+  currentSheets = await ensureSheets(env, Object.values(targetMap), currentSheets);
+
+  // Clear only the target sheets' values; this leaves formatting/merged cells intact.
+  await request(
+    env,
+    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchClear`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        ranges: Object.values(targetMap).map(title => `${q(title)}!A:${DEFAULT_COLS}`)
+      })
+    }
+  );
+
+  const dataRanges = [];
+  for (const name of names) {
+    const sheet = data[name] || {};
+    const rows = (sheet.values || []).map(row => Array.from({ length: Math.max(sheet.cols || 0, row?.length || 0) }, (_, i) => row?.[i] ?? ''));
+    dataRanges.push({
+      range: `${q(targetMap[name])}!A1`,
+      majorDimension: 'ROWS',
+      values: rows
+    });
+  }
+
+  const response = await request(
+    env,
+    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchUpdate`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: dataRanges })
+    }
+  );
+
+  return {
+    updated: names.length,
+    created: names.filter(name => !titles.includes(targetMap[name])).length,
+    targetMap,
+    response
+  };
 }
-
