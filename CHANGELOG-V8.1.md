@@ -47,3 +47,10 @@
 - Prevents stale IndexedDB entries from inflating the sheet count (e.g. 17 instead of 14).
 - Canonicalizes imported workbook sheet names before schema mapping and new-year creation.
 - Resets selected sheet to a valid canonical sheet after database repair.
+
+
+## V9.3 — Import stability + autosave
+- Added chunked Google Sheets writes and remote snapshot/restore on failed writes.
+- Added authenticated backend verification and lightweight revision endpoint.
+- Added autosave debounce, offline/local-draft state, and 3-second clean-state refresh.
+- Fixed loading state so backend errors do not leave the editor in an infinite spinner.
