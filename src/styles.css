@@ -249,3 +249,11 @@
 .login-card h1{font-size:32px;line-height:1.08;margin:10px 0}.login-card h1 span{color:#e7d16a}.login-card p{color:#9fb0b2;line-height:1.6;margin-bottom:24px}.login-card form{display:grid;gap:16px}.login-card label{display:grid;gap:7px}.login-card label span{font-size:12px;text-transform:uppercase;letter-spacing:.14em;color:#8ea6a8}.login-card input{width:100%;padding:13px 14px;border:1px solid rgba(180,220,220,.14);border-radius:14px;background:#0d1a1e;color:#eef7f5;outline:none}.login-card input:focus{border-color:#93d8c2;box-shadow:0 0 0 3px rgba(147,216,194,.12)}.login-btn{width:100%;justify-content:center;padding:13px}.login-error{padding:10px 12px;border-radius:12px;background:rgba(230,84,84,.11);border:1px solid rgba(230,84,84,.25);color:#ffb4b4}.login-card small{display:block;margin-top:18px;color:#718688}
 
 .logout-btn{margin-left:8px}
+
+/* V9.3 autosave / sync indicator */
+.autosave-indicator{display:inline-flex;align-items:center;min-height:30px;padding:0 11px;border:1px solid rgba(180,210,205,.16);border-radius:999px;font-size:10px;letter-spacing:.08em;font-weight:700;white-space:nowrap;background:rgba(12,24,28,.72);color:#b7c9c6}
+.autosave-indicator.pending,.autosave-indicator.saving{color:#e5d186;border-color:rgba(229,209,134,.32);box-shadow:0 0 18px rgba(229,209,134,.08)}
+.autosave-indicator.synced{color:#9ed9bd}
+.autosave-indicator.error{color:#f1a5a5;border-color:rgba(241,165,165,.28)}
+.autosave-indicator.offline{color:#c3ccd0}
+.loading button.primary{margin-top:18px}
