@@ -24,15 +24,25 @@ export async function onRequestGet({ request, env }) {
     if (env.GOOGLE_SHEETS_SPREADSHEET_ID && env.GOOGLE_SERVICE_ACCOUNT_JSON) {
       const wb = await readWorkbook(env, canonicalNames, year);
       if (Object.keys(wb.sheets).length) {
-        return json({ ok: true, source: 'google-sheets', year, payload: { ...wb, meta: { year, sheetCount: Object.keys(wb.sheets).length }, activeYear: year } });
+        return json({
+          ok: true,
+          source: 'google-sheets',
+          year,
+          needsImport: false,
+          payload: { ...wb, meta: { year, sheetCount: Object.keys(wb.sheets).length }, activeYear: year }
+        });
       }
+      const seed = seedPayload(year);
       return json({
-        ok: false,
+        ok: true,
+        source: 'google-sheets-uninitialized',
+        needsImport: true,
         code: 'YEAR_NOT_INITIALIZED',
-        message: `TA ${year} belum memiliki kertas kerja pada database Google Sheets.`,
+        message: `TA ${year} belum memiliki kertas kerja di Google Sheets. Gunakan Import Excel untuk membuat/menulis 14 sheet.`,
         year,
-        availableTitles: wb.availableTitles || []
-      }, 404);
+        availableTitles: wb.availableTitles || [],
+        payload: seed
+      }, 200);
     }
     return json({ ok: true, source: 'seed', year, payload: seedPayload(year) });
   } catch (e) {
