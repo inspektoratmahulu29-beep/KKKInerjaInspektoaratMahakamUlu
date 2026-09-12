@@ -36,3 +36,10 @@ Share spreadsheet pusat kepada `client_email` dari Service Account sebagai Edito
 
 ### Audit D1 (opsional tetapi disarankan)
 Tambahkan D1 binding bernama `DB` lalu jalankan `migrations/0001_init.sql`. Audit tetap dapat diterima tanpa binding, tetapi tanpa D1 audit hanya di sesi browser/backend response.
+
+
+## Google Sheets tahun & import
+- TA 2026 menggunakan nama sheet kanonik bila sudah ada.
+- Tahun selain 2026 otomatis menggunakan nama `YYYY__Nama Sheet`.
+- Import Excel memperbarui/membuat tab Google Sheets secara otomatis melalui backend.
+- Browser tidak menyimpan credential Google.
