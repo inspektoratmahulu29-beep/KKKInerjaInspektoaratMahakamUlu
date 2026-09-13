@@ -419,7 +419,17 @@ export async function rewriteFormulaCells(env, cells) {
     if (!name || !cell || !formula.startsWith('=')) continue;
     const title = resolveExistingTitle(Number(x?.year || 2026), name, titles) || titles.find(t => normalizeName(t) === normalizeName(name));
     if (!title) continue;
-    data.push({ range: `${q(title)}!${cell}`, majorDimension: 'ROWS', values: [[normalizeFormulaSeparators(formula, separator)]] });
+    let repaired = formula;
+    // Khusus sheet Realisasi Fisik & Keu, kolom E pada baris data memakai
+    // hubungan E = I/D*100 sementara I = H*D/100. Secara matematis E = H,
+    // tetapi rantai formula tersebut rentan kembali #ERROR setelah import Excel
+    // dan refresh pada Google Sheets. Saat error terdeteksi, turunkan menjadi
+    // formula langsung yang ekuivalen dan non-circular.
+    if (name === 'Realisasi Fisik & Keu' && /^E\d+$/i.test(cell)) {
+      const row = cell.slice(1);
+      repaired = `=IFERROR(H${row}${separator}"")`;
+    }
+    data.push({ range: `${q(title)}!${cell}`, majorDimension: 'ROWS', values: [[normalizeFormulaSeparators(repaired, separator)]] });
   }
   if (!data.length) return { updated: 0, batches: 0 };
   for (let i = 0; i < data.length; i += 250) {
