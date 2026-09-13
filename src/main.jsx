@@ -185,15 +185,39 @@ function getRealisasiTotals(values) {
   const financialTotal = officialFin !== null ? officialFin : fallbackFin;
   const officialPhysical = parseNumber(office[4]);
   const derivedPhysical = (() => {
-    const items = top.map(g => ({ b: g.budget, p: parseNumber((rows[g.summary - 1] || [])[4]) }))
-      .filter(x => x.b > 0 && x.p !== null);
+    // KPI fisik harus bersumber dari detail yang benar-benar terisi. Jangan
+    // percaya nilai E10 lama jika formula kantor pernah tersimpan sebagai 0
+    // atau error setelah import/refresh. Pada template ini E = I/D*100 dan
+    // I = H*D/100, sehingga E secara aljabar sama dengan H. H menjadi fallback
+    // yang stabil ketika hasil E belum ter-render oleh Google Sheets.
+    const items = [];
+    for (const g of top) {
+      for (let rr = g.summary + 1; rr < g.next; rr++) {
+        const r = rows[rr - 1] || [];
+        if (cleanText(r[1]) === '') continue;
+        const b = parseNumber(r[2]);
+        const p = parseNumber(r[4]) ?? parseNumber(r[7]);
+        if (b !== null && b > 0 && p !== null && Number.isFinite(p)) items.push({ b, p });
+      }
+    }
+    // Fallback level program bila detail fisik benar-benar belum tersedia.
+    if (!items.length) {
+      for (const g of top) {
+        const r = rows[g.summary - 1] || [];
+        const b = parseNumber(r[2]);
+        const p = parseNumber(r[4]) ?? parseNumber(r[7]);
+        if (b !== null && b > 0 && p !== null && Number.isFinite(p)) items.push({ b, p });
+      }
+    }
     return items.length ? items.reduce((a,x) => a + x.b*x.p, 0) / items.reduce((a,x) => a + x.b, 0) : null;
   })();
   return {
     officeRow, totalRow, programRows, top,
     budgetTotal, financialTotal,
     financialRate: budgetTotal ? financialTotal / budgetTotal * 100 : 0,
-    physicalRate: officialPhysical !== null ? officialPhysical : (derivedPhysical ?? 0),
+    // Jangan memilih 0 sebagai nilai resmi bila masih ada data fisik valid.
+    // Ini yang mencegah KPI kembali ke 0 sesudah refresh/re-login.
+    physicalRate: derivedPhysical !== null ? derivedPhysical : (officialPhysical !== null ? officialPhysical : 0),
     officialPhysical
   };
 }
@@ -626,8 +650,8 @@ function derive(payload){
   for(const g of rfInfo.top){
     for(let rr=g.summary+1; rr<g.next; rr++){
       const r=rf[rr-1]||[];
-      const b=parseNumber(r[2]), p=parseNumber(r[4]);
-      if(cleanText(r[1])!=='' && b!==null && p!==null) physicalPairs.push({b,p});
+      const b=parseNumber(r[2]), p=parseNumber(r[4]) ?? parseNumber(r[7]);
+      if(cleanText(r[1])!=='' && b!==null && p!==null && Number.isFinite(p)) physicalPairs.push({b,p});
     }
   }
   const physicalRowsCount=physicalPairs.length;
