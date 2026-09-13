@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
 import './styles.css';
-import { adminMe, adminLogin, adminLogout, fetchState, saveState, saveSheet, importSheet, fetchRevision, pushAudit } from './adminApi.js';
+import { adminMe, adminLogin, adminLogout, fetchState, saveState, saveSheet, saveCells, importSheet, importSheets, fetchRevision, pushAudit } from './adminApi.js';
 
 const STORAGE_KEY = 'mahulu-dashboard-realisasi-v8';
 const IMPORT_AUDIT_KEY = `${STORAGE_KEY}:importAudit`;
@@ -70,7 +70,7 @@ const parseNumber = (v) => {
 };
 const colName = (index) => { let s = ''; let n = index + 1; while (n) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
 const clone = (x) => JSON.parse(JSON.stringify(x));
-const isError = (v) => typeof v === 'string' && /#(REF!|DIV\/0!|VALUE!|NAME\?|N\/A)/i.test(v);
+const isError = (v) => typeof v === 'string' && /^\s*#(ERROR!|REF!|DIV\/0!|VALUE!|NAME\?|N\/A|NUM!|NULL!)(?:\s*)$/i.test(v);
 const isNum = (v) => parseNumber(v) !== null && !isError(v);
 
 const sheetMeta = {
@@ -712,10 +712,35 @@ function payloadDiffSummary(before,after){
   return {sheetsChanged,cellsChanged,rowsAdded,rowsRemoved};
 }
 function EditorApp(){
-  const [payload,setPayload]=useState(null),[baseline,setBaseline]=useState(null),[years,setYears]=useState({}),[year,setYear]=useState(null),[active,setActive]=useState('dashboard'),[selectedSheet,setSelectedSheet]=useState('Realisasi Fisik & Keu'),[query,setQuery]=useState(''),[selectedRow,setSelectedRow]=useState(null),[dirty,setDirty]=useState(false),[toast,setToast]=useState(''),[sidebarOpen,setSidebarOpen]=useState(false),[yearModal,setYearModal]=useState(false),[rowModal,setRowModal]=useState(null),[yearEditModal,setYearEditModal]=useState(false),[importModal,setImportModal]=useState(null),[auditModal,setAuditModal]=useState(false),[auditEntries,setAuditEntries]=useState([]),fileRef=useRef(null),xlsxRef=useRef(null),pendingSheetsRef=useRef(new Map()),savingRef=useRef(false),remoteRevisionRef=useRef('');
+  const [payload,setPayload]=useState(null),[baseline,setBaseline]=useState(null),[years,setYears]=useState({}),[year,setYear]=useState(null),[active,setActive]=useState('dashboard'),[selectedSheet,setSelectedSheet]=useState('Realisasi Fisik & Keu'),[query,setQuery]=useState(''),[selectedRow,setSelectedRow]=useState(null),[dirty,setDirty]=useState(false),[toast,setToast]=useState(''),[sidebarOpen,setSidebarOpen]=useState(false),[yearModal,setYearModal]=useState(false),[rowModal,setRowModal]=useState(null),[yearEditModal,setYearEditModal]=useState(false),[importModal,setImportModal]=useState(null),[auditModal,setAuditModal]=useState(false),[auditEntries,setAuditEntries]=useState([]),fileRef=useRef(null),xlsxRef=useRef(null),pendingSheetsRef=useRef(new Map()),pendingCellsRef=useRef(new Map()),cellVersionsRef=useRef(new Map()),savingRef=useRef(false),cellSavingRef=useRef(false),remoteRevisionRef=useRef('');
   useEffect(()=>{(async()=>{try{await initLocalStores();setAuditEntries(auditCache);const me=await adminMe();if(!me.ok) throw Object.assign(new Error('Sesi admin tidak valid. Silakan login kembali.'),{status:401});const target=Number(localStorage.getItem(`${STORAGE_KEY}:activeYear`))||2026;const resp=await fetchState(target);if(!resp.payload?.sheets) throw Object.assign(new Error(resp.message||'Database backend tidak mengembalikan sheet'),{status:resp.status||500});const base=recalculatePayload(resp.payload);setBaseline(clone(base));const selectedYear=Number(resp.year||target);const current=recalculatePayload(clone(resp.payload));setYears({[selectedYear]:current});setYear(selectedYear);setSelectedSheet(current.sheets?.['Realisasi Fisik & Keu']?'Realisasi Fisik & Keu':Object.keys(current.sheets||{})[0]||'');setPayload(current);setDirty(false);setToast(resp.needsImport?'Spreadsheet siap — TA ini belum diinisialisasi, gunakan Import Excel.':resp.source==='google-sheets'?'Terhubung ke database Google Sheets':'Mode seed server');}catch(e){if(e?.status===401) window.dispatchEvent(new CustomEvent('admin-auth-required'));setToast('Memuat database gagal: '+e.message);setPayload(null)}})()},[]);
 useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),3200);return()=>clearTimeout(t)},[toast]); useEffect(()=>{document.title=`${ORG} — Dashboard Realisasi Kinerja`},[]);
   useEffect(()=>{const h=e=>{const d=e.detail||{};if(d.sheet!==undefined)setRowModal({sheet:d.sheet,row:d.row})};window.addEventListener('open-row-editor',h);return()=>window.removeEventListener('open-row-editor',h)},[]);
+useEffect(()=>{
+    if(!payload||year===null||cellSavingRef.current||pendingCellsRef.current.size===0) return;
+    const timer=setTimeout(async()=>{
+      if(cellSavingRef.current) return;
+      cellSavingRef.current=true;
+      const batch=[...pendingCellsRef.current.values()];
+      const sent=batch.map(x=>({...x,version:cellVersionsRef.current.get(x.key)||0}));
+      try{
+        await saveCells(sent.map(({key,version,...x})=>x),year);
+        for(const item of sent){
+          if((cellVersionsRef.current.get(item.key)||0)===item.version){
+            pendingCellsRef.current.delete(item.key);
+          }
+        }
+        if(pendingCellsRef.current.size===0 && pendingSheetsRef.current.size===0){
+          setDirty(false);
+          setToast('Perubahan tersimpan otomatis ke database pusat');
+        }
+      }catch(e){
+        setToast('Sinkronisasi sel tertunda: '+(e.message||'server belum siap'));
+      }finally{cellSavingRef.current=false;}
+    },700);
+    return()=>clearTimeout(timer);
+  },[payload,year]);
+
 useEffect(()=>{
     if(!payload||year===null||!dirty||savingRef.current||pendingSheetsRef.current.size===0) return;
     const timer=setTimeout(async()=>{
@@ -728,6 +753,7 @@ useEffect(()=>{
           const sheet=payload.sheets?.[name];
           if(!sheet) continue;
           await saveSheet(clone(sheet),year);
+          for(const key of [...pendingCellsRef.current.keys()]) if(key.startsWith(name+'!')) pendingCellsRef.current.delete(key);
           saved.push([name,version]);
         }
         for(const [name,version] of saved){
@@ -773,11 +799,21 @@ useEffect(()=>{
   },[year,dirty,importModal]);
   const derived=useMemo(()=>payload?derive(payload):null,[payload]); const sheetNames=useMemo(()=>payload?Object.keys(payload.sheets||{}):[],[payload]);
   if(!payload||year===null)return <div className="loading"><div className="loading-orb"></div><div>Memuat database kertas kerja…</div></div>;
-  const update=(fn,sheetName=null)=>{
+  const update=(fn,sheetName=null,fastCell=null)=>{
     setPayload(prev=>{const next=clone(prev);fn(next);if(sheetName)applyAutoCalculations(next,sheetName);return next});
-    if(sheetName){ const prevVersion=pendingSheetsRef.current.get(sheetName)||0; pendingSheetsRef.current.set(sheetName,prevVersion+1); }
+    if(sheetName && !fastCell){ const prevVersion=pendingSheetsRef.current.get(sheetName)||0; pendingSheetsRef.current.set(sheetName,prevVersion+1); }
+    if(fastCell){
+      const key=`${sheetName}!${addr(fastCell.r,fastCell.c)}`;
+      const version=(cellVersionsRef.current.get(key)||0)+1;
+      cellVersionsRef.current.set(key,version);
+      pendingCellsRef.current.set(key,{key,name:sheetName,row:fastCell.r,col:fastCell.c,value:fastCell.v,version});
+    }
     setDirty(true);
-  }; const logout=async()=>{await adminLogout().catch(()=>{});window.location.reload();}; const updateCell=(sheet,r,c,v)=>update(p=>{if(p.sheets?.[sheet]?.values?.[r])p.sheets[sheet].values[r][c]=v},sheet);
+  }; const logout=async()=>{await adminLogout().catch(()=>{});window.location.reload();}; const updateCell=(sheet,r,c,v)=>{
+    const computed = sheetMeta[sheet]?.achieve===c || sheetMeta[sheet]?.budgetPct===c || (sheet==='Realisasi Fisik & Keu'&&[3,4,5,7,8,9].includes(c));
+    if(computed) return;
+    update(p=>{if(p.sheets?.[sheet]?.values?.[r])p.sheets[sheet].values[r][c]=v},sheet,{r,c,v});
+  };
   const addRow=(sheet,values,index)=>update(p=>{const s=p.sheets[sheet];if(!s)return;const cols=Math.max(s.cols||0,...s.values.map(r=>r?.length||0),values.length);const row=Array.from({length:cols},(_,i)=>values[i]??'');const at=index==null?s.values.length:Math.max(0,Math.min(index,s.values.length));s.values.splice(at,0,row);s.rows=s.values.length;s.cols=cols},sheet);
   const deleteRow=(sheet,row)=>update(p=>{const s=p.sheets[sheet];if(s?.values?.length>1){s.values.splice(row,1);s.rows=s.values.length}},sheet); const duplicateRow=(sheet,row)=>update(p=>{const s=p.sheets[sheet];if(s){s.values.splice(row+1,0,clone(s.values[row]||[]));s.rows=s.values.length}},sheet);
   const persistYears=async(nextPayload=payload,nextYear=year,nextYears=years)=>{
@@ -816,22 +852,15 @@ useEffect(()=>{
       );
       const sheetEntries=Object.entries(nextPayload.sheets||{});
       const total=sheetEntries.length;
-      let done=0;
-      setToast(`Menerapkan import 0/${total} sheet…`);
-      // Two-at-a-time keeps requests small while improving throughput without
-      // hammering the Google Sheets per-minute quota.
-      for(let i=0;i<sheetEntries.length;i+=2){
-        const pair=sheetEntries.slice(i,i+2);
-        await Promise.all(pair.map(async([name,sheet])=>{
-          await importSheet({...clone(sheet),name},targetYear,mode);
-          done++;
-          setToast(`Menerapkan import ${done}/${total} sheet…`);
-        }));
-      }
+      setToast(`Menerapkan import ${total} sheet dalam batch…`);
+      // Send the workbook in one authenticated request. The backend splits the
+      // payload under a conservative size budget and batches Google Sheets API
+      // writes, preventing the previous N×clear + N×write timeout pattern.
+      await importSheets(sheetEntries.map(([name,sheet]) => ({...clone(sheet),name})),targetYear,mode);
       delete nextPayload._templateBase64;
       const store={...years,[targetYear]:nextPayload};
       setYears(store);setYear(targetYear);setPayload(nextPayload);setDirty(false);
-      pendingSheetsRef.current.clear(); remoteRevisionRef.current='';
+      pendingSheetsRef.current.clear(); pendingCellsRef.current.clear(); cellVersionsRef.current.clear(); remoteRevisionRef.current='';
       writeAudit(makeAuditEntry('IMPORT_EXCEL',{file:p.source,mode,targetYear,stats:importSchemaStats(mapping),formulaAudit:formulaAudit(p),preserveFormat}));
       setImportModal(null);
       setToast(`Excel berhasil diimpor ke database pusat — ${total} sheet`);

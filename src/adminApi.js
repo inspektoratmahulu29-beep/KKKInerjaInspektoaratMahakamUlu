@@ -57,14 +57,22 @@ export const saveSheet = (sheet, year, options = {}) =>
     })
   });
 
+export const saveCells = (changes, year) =>
+  apiJson('/api/admin/cell', {
+    method: 'POST',
+    body: JSON.stringify({ year, changes })
+  });
+
 export const importSheet = (sheet, year, mode = 'replace') =>
   apiJson('/api/admin/import-sheet', {
     method: 'POST',
-    body: JSON.stringify({
-      year,
-      mode,
-      sheet
-    })
+    body: JSON.stringify({ year, mode, sheets: [sheet] })
+  });
+
+export const importSheets = (sheets, year, mode = 'replace') =>
+  apiJson('/api/admin/import-sheet', {
+    method: 'POST',
+    body: JSON.stringify({ year, mode, sheets })
   });
 
 export const fetchRevision = (year) =>
