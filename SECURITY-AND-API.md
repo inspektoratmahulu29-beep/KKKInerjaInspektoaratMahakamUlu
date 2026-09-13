@@ -29,3 +29,14 @@ Secrets:
 
 ## Catatan
 Password yang diberikan untuk bootstrap akun operator hanya disimpan sebagai Secret Cloudflare. Jangan menaruh credential di GitHub.
+
+
+## V9.5 routes
+- `PUT /api/admin/sheet` — autosave one changed sheet.
+- `POST /api/admin/import-sheet` — import one sheet at a time.
+- `GET /api/admin/revision` — lightweight remote revision based on Google Drive metadata when available.
+- `GET /api/admin/external-revision` — compatibility endpoint for the same metadata check.
+
+### Google services
+The Service Account uses server-side credentials only. Web 2 does not place those credentials in the browser.
+For direct spreadsheet-change detection, the same Service Account must have access to the spreadsheet and the Google Drive API must be enabled in its Cloud project.

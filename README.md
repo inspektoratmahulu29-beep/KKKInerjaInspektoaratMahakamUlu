@@ -43,3 +43,13 @@ Tambahkan D1 binding bernama `DB` lalu jalankan `migrations/0001_init.sql`. Audi
 - Tahun selain 2026 otomatis menggunakan nama `YYYY__Nama Sheet`.
 - Import Excel memperbarui/membuat tab Google Sheets secara otomatis melalui backend.
 - Browser tidak menyimpan credential Google.
+
+
+## V9.5 reliability/performance
+- Import Excel is applied per sheet through `/api/admin/import-sheet` instead of sending the entire workbook in one request.
+- Normal edits use `/api/admin/sheet` and are autosaved after a short idle period.
+- Google access tokens are cached in the isolate to avoid re-authenticating for every sheet request.
+- Sheet writes are chunked into bounded row batches with retry on transient Google 429/5xx responses.
+- `/api/admin/revision` prefers Google Drive file `modifiedTime`/`version` so direct edits in the central spreadsheet can be detected by Web 2 polling.
+- D1 remains optional for persistent audit/import logs and a fallback revision counter; it is not the primary Kertas Kerja datastore.
+- Enable both Google Sheets API and Google Drive API in the same Google Cloud project used by the Service Account.
