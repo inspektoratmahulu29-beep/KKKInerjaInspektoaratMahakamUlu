@@ -1,55 +1,58 @@
 import { getGoogleAccessToken } from './google.js';
 
 const API_ROOT = 'https://sheets.googleapis.com/v4';
-const DEFAULT_COLS = 'ZZ';
-const SYSTEM_SHEET = '__SYSTEM';
+const MAX_WRITE_ROWS = 250;
 
 function q(name) {
   return `'${String(name).replace(/'/g, "''")}'`;
 }
 
-function normalizeName(name) {
-  return String(name ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
-}
+async function request(env, path, init = {}, accessToken = null) {
+  const token = accessToken || await getGoogleAccessToken(env);
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(`${API_ROOT}/${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        ...(init.headers || {})
+      }
+    });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    if (res.ok) return data;
 
-function safeErrorMessage(data, status) {
-  const msg = data?.error?.message || data?.message || `Google Sheets ${status}`;
-  return `Google Sheets ${status}: ${msg}`;
-}
+    const message = data?.error?.message || `Google Sheets ${res.status}`;
+    lastError = new Error(message);
+    lastError.status = res.status;
 
-async function request(env, path, init = {}) {
-  const token = await getGoogleAccessToken(env);
-  const res = await fetch(`${API_ROOT}/${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      ...(init.headers || {})
-    }
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = { raw: text }; }
-  if (!res.ok) {
-    const err = new Error(safeErrorMessage(data, res.status));
-    err.status = res.status;
-    err.google = data?.error || null;
-    throw err;
+    // Transient Google/API gateway errors get a short backoff.
+    if (![429, 500, 502, 503, 504].includes(res.status) || attempt === 2) break;
+    await new Promise(r => setTimeout(r, 250 * (2 ** attempt)));
   }
-  return data;
+  throw lastError || new Error('Google Sheets request failed');
 }
 
-export async function getSpreadsheet(env) {
-  if (!env.GOOGLE_SHEETS_SPREADSHEET_ID) throw new Error('GOOGLE_SHEETS_SPREADSHEET_ID belum diatur');
-  return request(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}?fields=spreadsheetId,properties(title),sheets(properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount)))`);
+export async function getSpreadsheet(env, accessToken = null) {
+  if (!env.GOOGLE_SHEETS_SPREADSHEET_ID) {
+    throw new Error('GOOGLE_SHEETS_SPREADSHEET_ID belum diatur');
+  }
+  return request(
+    env,
+    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}?fields=spreadsheetId,sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))`,
+    {},
+    accessToken
+  );
 }
 
-export function yearSheetName(year, canonical, existingTitles = []) {
-  const exact = existingTitles.find(t => normalizeName(t) === normalizeName(canonical));
-  if (exact && Number(year) === 2026) return exact;
-  const prefixed = `${Number(year)}__${canonical}`;
-  const existingPrefixed = existingTitles.find(t => normalizeName(t) === normalizeName(prefixed));
-  return existingPrefixed || prefixed;
+function normalizeName(name) {
+  return String(name ?? '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
 }
 
 export function resolveExistingTitle(year, canonical, existingTitles) {
@@ -59,45 +62,135 @@ export function resolveExistingTitle(year, canonical, existingTitles) {
   return existingTitles.find(t => normalizeName(t) === normalizeName(pref)) || null;
 }
 
-async function ensureSheets(env, targetTitles, currentSheets, { hide = false } = {}) {
-  const existing = new Set(currentSheets.map(s => s.properties.title));
+async function ensureSheets(env, targetTitles, currentSheets, accessToken = null) {
+  const existing = new Set((currentSheets || []).map(s => s.properties.title));
   const missing = [...new Set(targetTitles)].filter(t => !existing.has(t));
-  if (!missing.length) return currentSheets;
-  const requests = missing.map(title => ({ addSheet: { properties: { title, ...(hide ? { hidden: true } : {}) } } }));
-  await request(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}:batchUpdate`, {
-    method: 'POST',
-    body: JSON.stringify({ requests })
-  });
-  const meta = await getSpreadsheet(env);
+  if (!missing.length) return currentSheets || [];
+  const requests = missing.map(title => ({
+    addSheet: { properties: { title } }
+  }));
+  await request(
+    env,
+    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}:batchUpdate`,
+    { method: 'POST', body: JSON.stringify({ requests }) },
+    accessToken
+  );
+  const meta = await getSpreadsheet(env, accessToken);
   return meta.sheets || [];
 }
 
-async function ensureSystemSheet(env, currentSheets) {
-  const existing = currentSheets.find(s => s.properties.title === SYSTEM_SHEET);
-  if (existing) return { sheets: currentSheets, sheetId: existing.properties.sheetId };
-  const sheets = await ensureSheets(env, [SYSTEM_SHEET], currentSheets, { hide: true });
-  const created = sheets.find(s => s.properties.title === SYSTEM_SHEET);
-  return { sheets, sheetId: created?.properties.sheetId || null };
+function columnLetter(index) {
+  let n = index + 1, s = '';
+  while (n) {
+    const r = (n - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+function cellAddress(rowIndex, colIndex) {
+  return `${columnLetter(colIndex)}${rowIndex + 1}`;
+}
+
+function rowsMatrix(sheet) {
+  const values = Array.isArray(sheet?.values) ? sheet.values : [];
+  const cols = Math.max(
+    Number(sheet?.cols) || 0,
+    ...values.map(r => Array.isArray(r) ? r.length : 0),
+    0
+  );
+  const formulas = sheet?.formulas || {};
+  return values.map((row, r) => Array.from({ length: cols }, (_, c) => {
+    const addr = cellAddress(r, c);
+    const f = formulas[addr];
+    // Preserve normal local formulas in Google Sheets. External formulas are
+    // deliberately kept as their cached imported value to avoid broken links.
+    if (typeof f === 'string' && f.startsWith('=') && !/\[[^\]]+\]/.test(f)) return f;
+    return row?.[c] ?? '';
+  }));
+}
+
+async function clearAndWriteSheet(env, title, sheet, accessToken) {
+  const matrix = rowsMatrix(sheet);
+  const rows = matrix.length;
+  const cols = Math.max(Number(sheet?.cols) || 0, ...matrix.map(r => r.length), 1);
+  const lastCol = columnLetter(cols - 1);
+  const clearRange = `${q(title)}!A1:${lastCol}${Math.max(rows, 1)}`;
+
+  // Values only: formatting/merges remain intact.
+  await request(
+    env,
+    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchClear`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ ranges: [clearRange] })
+    },
+    accessToken
+  );
+
+  if (!rows) return { rows: 0, chunks: 0 };
+
+  let chunks = 0;
+  for (let start = 0; start < rows; start += MAX_WRITE_ROWS) {
+    const slice = matrix.slice(start, start + MAX_WRITE_ROWS);
+    const endRow = start + slice.length;
+    await request(
+      env,
+      `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchUpdate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          valueInputOption: 'USER_ENTERED',
+          data: [{
+            range: `${q(title)}!A${start + 1}:${lastCol}${endRow}`,
+            majorDimension: 'ROWS',
+            values: slice
+          }]
+        })
+      },
+      accessToken
+    );
+    chunks++;
+  }
+
+  return { rows, chunks };
 }
 
 export async function readWorkbook(env, canonicalNames, year = 2026) {
-  const meta = await getSpreadsheet(env);
+  const accessToken = await getGoogleAccessToken(env);
+  const meta = await getSpreadsheet(env, accessToken);
   const currentSheets = meta.sheets || [];
   const titles = currentSheets.map(s => s.properties.title);
-  const resolved = canonicalNames.map(name => ({ canonical: name, actual: resolveExistingTitle(year, name, titles) })).filter(x => x.actual);
+  const resolved = canonicalNames
+    .map(name => ({
+      canonical: name,
+      actual: resolveExistingTitle(year, name, titles)
+    }))
+    .filter(x => x.actual);
 
   if (!resolved.length) {
-    return { meta, sheets: {}, missing: canonicalNames, availableTitles: titles };
+    return {
+      meta,
+      sheets: {},
+      missing: canonicalNames,
+      availableTitles: titles
+    };
   }
 
-  const ranges = resolved.map(x => `${q(x.actual)}!A:${DEFAULT_COLS}`);
+  const ranges = resolved.map(x => `${q(x.actual)}!A:ZZ`);
   const qs = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
-  const data = await request(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchGet?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE&${qs}`);
+  const data = await request(
+    env,
+    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchGet?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE&${qs}`,
+    {},
+    accessToken
+  );
+
   const sheets = {};
   for (let i = 0; i < resolved.length; i++) {
     const item = resolved[i];
-    const vr = data.valueRanges?.[i] || {};
-    const values = vr.values || [];
+    const values = data.valueRanges?.[i]?.values || [];
     sheets[item.canonical] = {
       name: item.canonical,
       googleTitle: item.actual,
@@ -107,70 +200,37 @@ export async function readWorkbook(env, canonicalNames, year = 2026) {
       formulas: {}
     };
   }
-  return { meta, sheets, missing: canonicalNames.filter(n => !sheets[n]), availableTitles: titles };
+
+  return {
+    meta,
+    sheets,
+    missing: canonicalNames.filter(n => !sheets[n]),
+    availableTitles: titles
+  };
 }
 
-async function readRanges(env, titles) {
-  if (!titles.length) return {};
-  const ranges = titles.map(title => `${q(title)}!A:${DEFAULT_COLS}`);
-  const qs = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
-  const data = await request(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchGet?majorDimension=ROWS&valueRenderOption=FORMULA&${qs}`);
-  const out = {};
-  titles.forEach((title, i) => { out[title] = data.valueRanges?.[i]?.values || []; });
-  return out;
-}
-
-async function clearTitles(env, titles) {
-  if (!titles.length) return;
-  await request(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchClear`, {
-    method: 'POST', body: JSON.stringify({ ranges: titles.map(title => `${q(title)}!A:${DEFAULT_COLS}`) })
-  });
-}
-
-async function writeChunks(env, ranges, chunkSize = 3) {
-  for (let i = 0; i < ranges.length; i += chunkSize) {
-    const chunk = ranges.slice(i, i + chunkSize);
-    await request(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchUpdate`, {
-      method: 'POST',
-      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: chunk })
-    });
+export async function writeSingleSheet(env, sheet, year = 2026, options = {}) {
+  if (!env.GOOGLE_SHEETS_SPREADSHEET_ID || !env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    throw new Error('Google Sheets belum dikonfigurasi di backend');
   }
-}
+  const name = String(sheet?.name || '').trim();
+  if (!name) throw new Error('Nama sheet kosong');
 
-async function restoreSnapshot(env, snapshot) {
-  const entries = Object.entries(snapshot || {});
-  if (!entries.length) return;
-  await clearTitles(env, entries.map(([title]) => title));
-  const ranges = entries.map(([title, values]) => ({ range: `${q(title)}!A1`, majorDimension: 'ROWS', values }));
-  await writeChunks(env, ranges, 3);
-}
+  const accessToken = await getGoogleAccessToken(env);
+  const meta = await getSpreadsheet(env, accessToken);
+  let currentSheets = meta.sheets || [];
+  const titles = currentSheets.map(s => s.properties.title);
+  const targetTitle = resolveExistingTitle(year, name, titles) || `${Number(year)}__${name}`;
 
-export async function writeRevision(env, year = 2026, reason = 'write') {
-  const meta = await getSpreadsheet(env);
-  const sys = await ensureSystemSheet(env, meta.sheets || []);
-  const stamp = new Date().toISOString();
-  const revision = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-  await request(env, `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchUpdate`, {
-    method: 'POST',
-    body: JSON.stringify({
-      valueInputOption: 'USER_ENTERED',
-      data: [{
-        range: `${q(SYSTEM_SHEET)}!A1:C2`,
-        majorDimension: 'ROWS',
-        values: [['revision', 'updatedAt', 'year'], [revision, stamp, Number(year)]]
-      }]
-    })
-  });
-  return { revision, updatedAt: stamp, year: Number(year), reason, systemSheetId: sys.sheetId };
-}
-
-export async function readRevision(env) {
-  const meta = await getSpreadsheet(env);
-  const titles = (meta.sheets || []).map(s => s.properties.title);
-  if (!titles.includes(SYSTEM_SHEET)) return { revision: '0', updatedAt: null, year: null };
-  const values = await readRanges(env, [SYSTEM_SHEET]);
-  const rows = values[SYSTEM_SHEET] || [];
-  return { revision: rows?.[1]?.[0] || '0', updatedAt: rows?.[1]?.[1] || null, year: rows?.[1]?.[2] || null };
+  currentSheets = await ensureSheets(env, [targetTitle], currentSheets, accessToken);
+  const result = await clearAndWriteSheet(env, targetTitle, sheet, accessToken);
+  return {
+    ok: true,
+    name,
+    googleTitle: targetTitle,
+    created: !titles.includes(targetTitle),
+    ...result
+  };
 }
 
 export async function writeWorkbook(env, payload, year = 2026) {
@@ -178,45 +238,18 @@ export async function writeWorkbook(env, payload, year = 2026) {
   const names = Object.keys(data);
   if (!names.length) return { updated: 0, created: 0 };
 
-  const meta = await getSpreadsheet(env);
-  let currentSheets = meta.sheets || [];
-  const titles = currentSheets.map(s => s.properties.title);
-  const targetMap = {};
-  for (const name of names) targetMap[name] = resolveExistingTitle(year, name, titles) || (Number(year) === 2026 ? name : `${Number(year)}__${name}`);
-  const targetTitles = Object.values(targetMap);
-
-  currentSheets = await ensureSheets(env, targetTitles, currentSheets);
-
-  // Remote snapshot makes import atomic-ish: if any write fails, attempt to restore the prior values.
-  const snapshot = await readRanges(env, targetTitles);
-  let changed = false;
-  try {
-    await clearTitles(env, targetTitles);
-    const dataRanges = [];
-    for (const name of names) {
-      const sheet = data[name] || {};
-      const cols = Math.max(sheet.cols || 0, ...(sheet.values || []).map(row => row?.length || 0), 1);
-      const rows = (sheet.values || []).map(row => Array.from({ length: cols }, (_, i) => row?.[i] ?? ''));
-      dataRanges.push({ range: `${q(targetMap[name])}!A1`, majorDimension: 'ROWS', values: rows });
-    }
-    await writeChunks(env, dataRanges, 3);
-    changed = true;
-    const revision = await writeRevision(env, year, 'import-or-save');
-    return {
-      updated: names.length,
-      created: names.filter(name => !titles.includes(targetMap[name])).length,
-      targetMap,
-      revision,
-      response: { ok: true }
-    };
-  } catch (e) {
-    try { await restoreSnapshot(env, snapshot); } catch (restoreErr) {
-      e.restoreError = restoreErr?.message || String(restoreErr);
-    }
-    const wrapped = new Error(e.message || 'Gagal menyimpan ke Google Sheets');
-    wrapped.status = e.status || 502;
-    wrapped.restoreAttempted = true;
-    wrapped.restoreSucceeded = !e.restoreError;
-    throw wrapped;
+  // Import/save is intentionally performed sheet-by-sheet to keep each request
+  // small and prevent a large workbook from timing out a single Pages Function.
+  const results = [];
+  for (const name of names) {
+    results.push(await writeSingleSheet(env, {
+      ...(data[name] || {}),
+      name
+    }, year));
   }
+  return {
+    updated: results.length,
+    created: results.filter(x => x.created).length,
+    results
+  };
 }
