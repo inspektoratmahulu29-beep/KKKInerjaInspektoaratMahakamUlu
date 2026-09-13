@@ -1,5 +1,5 @@
 import { getCookie, json, verifySession } from '../../lib/security.js';
-import { readWorkbook, writeWorkbook } from '../../lib/sheets.js';
+import { readWorkbook, writeWorkbook, rewriteFormulaCells } from '../../lib/sheets.js';
 import { SEED_WORKBOOK } from '../../lib/seed.js';
 
 const canonicalNames = ['IKU','Rencana Aksi','Capaian Sasaran Strategis','Capaian Sasaran Program','Capaian Sasaran Kegiatan Utama','Capaian Sasaran Kegiatan(Penun)','Capaian Sasaran SUBKegiatan(U)','Capaian Sasaran SUBKegiatan (P)','Monev Renaksi IKU','Monev Program','Monev output Subkegiatan Utama','Monev Subkegiatan Penunjang','Rekap realisasi PKPT','Realisasi Fisik & Keu'];
@@ -22,13 +22,21 @@ export async function onRequestGet({ request, env }) {
   const year = Number(url.searchParams.get('year') || env.DEFAULT_YEAR || 2026);
   try {
     if (env.GOOGLE_SHEETS_SPREADSHEET_ID && env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-      const wb = await readWorkbook(env, canonicalNames, year);
+      let wb = await readWorkbook(env, canonicalNames, year);
+      // One-time self-healing for parse-style formula errors caused by an Excel/Sheets
+      // locale delimiter mismatch. Only cells that are both formulas and #ERROR/#REF/#NAME?
+      // are touched; ordinary business data is never overwritten.
+      if (Array.isArray(wb.formulaErrors) && wb.formulaErrors.length) {
+        await rewriteFormulaCells(env, wb.formulaErrors.map(x => ({ ...x, year })));
+        wb = await readWorkbook(env, canonicalNames, year);
+      }
       if (Object.keys(wb.sheets).length) {
         return json({
           ok: true,
           source: 'google-sheets',
           year,
           needsImport: false,
+          formulaRepairCount: Array.isArray(wb.formulaErrors) ? wb.formulaErrors.length : 0,
           payload: { ...wb, meta: { year, sheetCount: Object.keys(wb.sheets).length }, activeYear: year }
         });
       }
