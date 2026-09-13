@@ -53,3 +53,9 @@ Tambahkan D1 binding bernama `DB` lalu jalankan `migrations/0001_init.sql`. Audi
 - `/api/admin/revision` prefers Google Drive file `modifiedTime`/`version` so direct edits in the central spreadsheet can be detected by Web 2 polling.
 - D1 remains optional for persistent audit/import logs and a fallback revision counter; it is not the primary Kertas Kerja datastore.
 - Enable both Google Sheets API and Google Drive API in the same Google Cloud project used by the Service Account.
+
+## V11 production hardening
+Gunakan V11 untuk menghindari pola 503 berulang saat import dan autosave. Import workbook dilakukan batch aman; edit sel biasa dikirim sebagai delta; data lama tidak di-clear sebelum penulisan baru sukses; dan formula parse error dapat di-heal saat login admin.
+
+Sebelum deploy, jalankan:
+`node scripts/check-backend.mjs`
