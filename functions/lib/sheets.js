@@ -76,7 +76,13 @@ export function resolveExistingTitle(year, canonical, existingTitles) {
   const exact = existingTitles.find(t => normalizeName(t) === normalizeName(canonical));
   if (exact && Number(year) === 2026) return exact;
   const pref = `${Number(year)}__${canonical}`;
-  return existingTitles.find(t => normalizeName(t) === normalizeName(pref)) || null;
+  const preferred = existingTitles.find(t => normalizeName(t) === normalizeName(pref));
+  if (preferred) return preferred;
+  if (normalizeName(canonical) === normalizeName('Laporan Monev Renaksi')) {
+    const aliases = [`Laporan_Monev_Renaksi_${Number(year)}`, `Laporan Monev Renaksi ${Number(year)}`, `Laporan_Monev_Renaksi_${Number(year)}`];
+    return existingTitles.find(t => aliases.some(a => normalizeName(t) === normalizeName(a))) || null;
+  }
+  return null;
 }
 
 async function ensureSheets(env, targetTitles, currentSheets, accessToken = null) {
