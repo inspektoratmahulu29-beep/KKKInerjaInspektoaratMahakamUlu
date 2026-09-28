@@ -262,28 +262,164 @@ export function MonevRenaksiPage({payload,updateCell,onOpenSheet,year,dirty}){
   const sheet=payload?.sheets?.[MONEV_REPORT_SHEET];
   const l=findMonevReportLayout(sheet);
   if(!sheet || l.kpiStart<0 || l.monthlyStart<0 || l.quarterStart<0){
-    return <section className="page"><div className="panel"><h2>Laporan Monev Renaksi belum tersedia</h2><p>Simpan atau buka tahun aktif untuk membuat struktur KPI per triwulan serta realisasi fisik/keuangan bulanan.</p><button className="primary" onClick={onOpenSheet}>Buka sheet Laporan Monev Renaksi</button></div></section>;
+    return (
+      <section className="page">
+        <div className="panel">
+          <h2>Laporan Monev Renaksi belum tersedia</h2>
+          <p>Simpan atau buka tahun aktif untuk membuat struktur KPI per triwulan serta realisasi fisik/keuangan.</p>
+          <button className="primary" onClick={onOpenSheet}>Buka sheet Laporan Monev Renaksi</button>
+        </div>
+      </section>
+    );
   }
+
   const kpiRows=(sheet.values||[]).slice(l.kpiStart,l.kpiEnd+1).filter(r=>text(r?.[2]));
   const monthly=(sheet.values||[]).slice(l.monthlyStart,l.monthlyStart+12);
   const quarterly=(sheet.values||[]).slice(l.quarterStart,l.quarterStart+5);
   const input=(r,c,e)=>updateCell(MONEV_REPORT_SHEET,r,c,e.target.value);
-  return <section className="page monev-page">
-    <div className="monev-head panel">
-      <div><span className="eyebrow">MONITORING & EVALUASI • TA {year}</span><h2>Laporan Monev Renaksi</h2><p>KPI per triwulan mengikuti sumber <b>Monev Renaksi IKU</b>. Realisasi fisik dan keuangan dicatat per bulan dan direkap otomatis per triwulan.</p></div>
-      <div className="monev-head-actions"><span className={dirty?'state dirty':'state'}>{dirty?'● Ada perubahan':'● Tersimpan'}</span><button className="soft" onClick={onOpenSheet}>▦ Buka sheet lengkap</button></div>
-    </div>
-    <div className="monev-card panel">
-      <div className="editor-meta"><div><span className="eyebrow">KPI PER TRIWULAN</span><b>Pencapaian KPI Renaksi</b><small>{kpiRows.length} indikator • otomatis mengikuti Monev Renaksi IKU</small></div><span className="auto-badge">AUTO SYNC KPI</span></div>
-      <div className="scroll-table monev-table"><table><thead><tr><th>No</th><th>Indikator KPI</th><th>Satuan</th><th>TW 1<br/><small>T / R / %</small></th><th>TW 2<br/><small>T / R / %</small></th><th>TW 3<br/><small>T / R / %</small></th><th>TW 4<br/><small>T / R / %</small></th></tr></thead><tbody>{kpiRows.map((r,i)=><tr key={i}><td>{r[0]}</td><td><b>{r[2]}</b><small>{r[1]||'—'}</small></td><td>{r[3]||'—'}</td>{[[5,6,7],[8,9,10],[11,12,13],[14,15,16]].map(([t,x,p])=><td key={t}><div className="triad"><span>{text(r[t])||'—'}</span><span>{text(r[x])||'—'}</span><strong>{pctValue(r[p]!==''&&r[p]!==null?r[p]*100:null)}</strong></div></td>)}</tr>)}</tbody></table></div>
-    </div>
-    <div className="monev-card panel">
-      <div className="editor-meta"><div><span className="eyebrow">REALISASI BULANAN</span><b>Fisik & Keuangan per Bulan</b><small>Kolom input: target fisik, realisasi fisik, anggaran, realisasi keuangan • serapan otomatis</small></div><span className="input-badge">INPUT BULANAN</span></div>
-      <div className="scroll-table monev-table"><table><thead><tr><th>Bulan</th><th>TW</th><th>Target Fisik (%)</th><th>Realisasi Fisik (%)</th><th>Anggaran (Rp)</th><th>Realisasi Keuangan (Rp)</th><th>Serapan (%)</th></tr></thead><tbody>{monthly.map((r,i)=>{const rr=l.monthlyStart+i;return <tr key={i}><td><b>{r?.[0]}</b></td><td>{r?.[1]}</td><td><input className="monev-input" inputMode="decimal" value={r?.[2]??''} onChange={e=>input(rr,2,e)} /></td><td><input className="monev-input" inputMode="decimal" value={r?.[3]??''} onChange={e=>input(rr,3,e)} /></td><td><input className="monev-input money-input" inputMode="decimal" value={r?.[4]??''} onChange={e=>input(rr,4,e)} /></td><td><input className="monev-input money-input" inputMode="decimal" value={r?.[5]??''} onChange={e=>input(rr,5,e)} /></td><td className="computed-cell">{pctValue(r?.[6]!==''&&r?.[6]!=null?r[6]*100:null)}</td></tr>})}</tbody></table></div>
-    </div>
-    <div className="monev-card panel">
-      <div className="editor-meta"><div><span className="eyebrow">REKAP TRIWULAN</span><b>Fisik & Keuangan per TW</b><small>Fisik memakai posisi bulan terakhir; keuangan diakumulasi dari bulan dalam TW</small></div><span className="auto-badge">AUTO CALC</span></div>
-      <div className="scroll-table monev-table"><table><thead><tr><th>TW</th><th>Bulan Terakhir</th><th>Target Fisik</th><th>Realisasi Fisik</th><th>Anggaran TW</th><th>Realisasi Keuangan TW</th><th>Serapan TW</th><th>Sisa Dana TW</th></tr></thead><tbody>{quarterly.map((r,i)=><tr key={i} className={r?.[0]==='TAHUNAN'?'annual-row':''}><td><b>{r?.[0]}</b></td><td>{r?.[1]}</td><td>{pctValue(r?.[2])}</td><td>{pctValue(r?.[3])}</td><td>{moneyValue(r?.[4])}</td><td>{moneyValue(r?.[5])}</td><td>{pctValue(r?.[6]!=null&&r?.[6]!==''?r[6]*100:null)}</td><td>{moneyValue(r?.[7])}</td></tr>)}</tbody></table></div>
-    </div>
-  </section>;
+
+  return (
+    <section className="page monev-page">
+      <div className="monev-head panel">
+        <div>
+          <span className="eyebrow">MONITORING & EVALUASI • TA {year}</span>
+          <h2>Laporan Monev Renaksi</h2>
+          <p>
+            KPI per triwulan mengikuti sumber <b>Monev Renaksi IKU</b>. Realisasi fisik dan keuangan dicatat per bulan dan direkap otomatis per triwulan.
+          </p>
+        </div>
+        <div className="monev-head-actions">
+          <span className={dirty ? 'state dirty' : 'state'}>{dirty ? '● Ada perubahan' : '● Tersimpan'}</span>
+          <button className="soft" onClick={onOpenSheet}>▦ Buka sheet lengkap</button>
+        </div>
+      </div>
+
+      <div className="monev-card panel">
+        <div className="editor-meta">
+          <div>
+            <span className="eyebrow">KPI PER TRIWULAN</span>
+            <b>Pencapaian KPI Renaksi</b>
+            <small>{kpiRows.length} indikator • otomatis mengikuti Monev Renaksi IKU</small>
+          </div>
+          <span className="auto-badge">AUTO SYNC KPI</span>
+        </div>
+        <div className="scroll-table monev-table">
+          <table>
+            <thead>
+              <tr>
+                <th>No</th>
+                <th>Indikator KPI</th>
+                <th>Satuan</th>
+                <th>TW 1<br/><small>T / R / %</small></th>
+                <th>TW 2<br/><small>T / R / %</small></th>
+                <th>TW 3<br/><small>T / R / %</small></th>
+                <th>TW 4<br/><small>T / R / %</small></th>
+              </tr>
+            </thead>
+            <tbody>
+              {kpiRows.map((r,i)=>(
+                <tr key={i}>
+                  <td>{r[0]}</td>
+                  <td><b>{r[2]}</b><small>{r[1] || '—'}</small></td>
+                  <td>{r[3] || '—'}</td>
+                  {[[5,6,7],[8,9,10],[11,12,13],[14,15,16]].map(([t,x,p])=>(
+                    <td key={t}>
+                      <div className="triad">
+                        <span>{text(r[t]) || '—'}</span>
+                        <span>{text(r[x]) || '—'}</span>
+                        <strong>{pctValue(r[p] !== '' && r[p] !== null ? r[p] * 100 : null)}</strong>
+                      </div>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="monev-card panel">
+        <div className="editor-meta">
+          <div>
+            <span className="eyebrow">REALISASI BULANAN</span>
+            <b>Fisik & Keuangan per Bulan</b>
+            <small>Kolom input: target fisik, realisasi fisik, anggaran, realisasi keuangan • serapan otomatis</small>
+          </div>
+          <span className="input-badge">INPUT BULANAN</span>
+        </div>
+        <div className="scroll-table monev-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Bulan</th>
+                <th>TW</th>
+                <th>Target Fisik (%)</th>
+                <th>Realisasi Fisik (%)</th>
+                <th>Anggaran (Rp)</th>
+                <th>Realisasi Keuangan (Rp)</th>
+                <th>Serapan (%)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthly.map((r,i)=>{
+                const rr=l.monthlyStart+i;
+                return (
+                  <tr key={i}>
+                    <td><b>{r?.[0]}</b></td>
+                    <td>{r?.[1]}</td>
+                    <td><input className="monev-input" inputMode="decimal" value={r?.[2] ?? ''} onChange={e=>input(rr,2,e)} /></td>
+                    <td><input className="monev-input" inputMode="decimal" value={r?.[3] ?? ''} onChange={e=>input(rr,3,e)} /></td>
+                    <td><input className="monev-input money-input" inputMode="decimal" value={r?.[4] ?? ''} onChange={e=>input(rr,4,e)} /></td>
+                    <td><input className="monev-input money-input" inputMode="decimal" value={r?.[5] ?? ''} onChange={e=>input(rr,5,e)} /></td>
+                    <td className="computed-cell">{pctValue(r?.[6] !== '' && r?.[6] != null ? r[6] * 100 : null)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="monev-card panel">
+        <div className="editor-meta">
+          <div>
+            <span className="eyebrow">REKAP TRIWULAN</span>
+            <b>Fisik & Keuangan per TW</b>
+            <small>Fisik memakai posisi bulan terakhir; keuangan diakumulasi dari bulan dalam TW</small>
+          </div>
+          <span className="auto-badge">AUTO CALC</span>
+        </div>
+        <div className="scroll-table monev-table">
+          <table>
+            <thead>
+              <tr>
+                <th>TW</th>
+                <th>Bulan Terakhir</th>
+                <th>Target Fisik</th>
+                <th>Realisasi Fisik</th>
+                <th>Anggaran TW</th>
+                <th>Realisasi Keuangan TW</th>
+                <th>Serapan TW</th>
+                <th>Sisa Dana TW</th>
+              </tr>
+            </thead>
+            <tbody>
+              {quarterly.map((r,i)=>(
+                <tr key={i} className={r?.[0] === 'TAHUNAN' ? 'annual-row' : ''}>
+                  <td><b>{r?.[0]}</b></td>
+                  <td>{r?.[1]}</td>
+                  <td>{pctValue(r?.[2])}</td>
+                  <td>{pctValue(r?.[3])}</td>
+                  <td>{moneyValue(r?.[4])}</td>
+                  <td>{moneyValue(r?.[5])}</td>
+                  <td>{pctValue(r?.[6] != null && r?.[6] !== '' ? r[6] * 100 : null)}</td>
+                  <td>{moneyValue(r?.[7])}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
 }
