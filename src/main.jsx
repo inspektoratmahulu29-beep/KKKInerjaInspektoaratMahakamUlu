@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
 import './styles.css';
 import { adminMe, adminLogin, adminLogout, fetchState, saveState, saveSheet, saveCells, importSheet, importSheets, fetchRevision, pushAudit } from './adminApi.js';
-import { MONEV_REPORT_SHEET, ensureMonevReport, prepareBlankMonevReport, isMonevReportComputedCell, MonevRenaksiPage } from './monevReport.js';
+import { MONEV_REPORT_SHEET, ensureMonevReport, prepareBlankMonevReport, isMonevReportComputedCell, MonevRenaksiPage } from './monevReport.jsx';
 
 const STORAGE_KEY = 'mahulu-dashboard-realisasi-v8';
 const IMPORT_AUDIT_KEY = `${STORAGE_KEY}:importAudit`;
