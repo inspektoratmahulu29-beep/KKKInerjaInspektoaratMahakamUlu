@@ -2,7 +2,7 @@ import { getCookie, json, verifySession } from '../../lib/security.js';
 import { readWorkbook, writeWorkbook, rewriteFormulaCells } from '../../lib/sheets.js';
 import { SEED_WORKBOOK } from '../../lib/seed.js';
 
-const canonicalNames = ['IKU','Rencana Aksi','Capaian Sasaran Strategis','Capaian Sasaran Program','Capaian Sasaran Kegiatan Utama','Capaian Sasaran Kegiatan(Penun)','Capaian Sasaran SUBKegiatan(U)','Capaian Sasaran SUBKegiatan (P)','Monev Renaksi IKU','Monev Program','Monev output Subkegiatan Utama','Monev Subkegiatan Penunjang','Rekap realisasi PKPT','Realisasi Fisik & Keu'];
+const canonicalNames = ['IKU','Rencana Aksi','Capaian Sasaran Strategis','Capaian Sasaran Program','Capaian Sasaran Kegiatan Utama','Capaian Sasaran Kegiatan(Penun)','Capaian Sasaran SUBKegiatan(U)','Capaian Sasaran SUBKegiatan (P)','Monev Renaksi IKU','Monev Program','Monev output Subkegiatan Utama','Monev Subkegiatan Penunjang','Rekap realisasi PKPT','Realisasi Fisik & Keu','Laporan Monev Renaksi'];
 
 async function requireAuth(request, env) {
   return verifySession(env, getCookie(request, '__Host-kk_session'));
@@ -46,7 +46,7 @@ export async function onRequestGet({ request, env }) {
         source: 'google-sheets-uninitialized',
         needsImport: true,
         code: 'YEAR_NOT_INITIALIZED',
-        message: `TA ${year} belum memiliki kertas kerja di Google Sheets. Gunakan Import Excel untuk membuat/menulis 14 sheet.`,
+        message: `TA ${year} belum memiliki kertas kerja di Google Sheets. Gunakan Import Excel untuk membuat/menulis seluruh sheet kertas kerja termasuk Laporan Monev Renaksi.`,
         year,
         availableTitles: wb.availableTitles || [],
         payload: seed
