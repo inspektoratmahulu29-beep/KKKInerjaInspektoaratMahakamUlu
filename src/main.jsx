@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
 import './styles.css';
 import { adminMe, adminLogin, adminLogout, fetchState, saveState, saveSheet, saveCells, importSheet, importSheets, fetchRevision, pushAudit, changeStructure, fetchTemplate, addOfficialMonev } from './adminApi.js';
-import { OFFICIAL_REPORT_2026,compatibleSheetNames } from '../functions/lib/report-schema.js';
+import { OFFICIAL_REPORT_2026,compatibleSheetNames,isOfficialReportName,officialReportName } from '../functions/lib/report-schema.js';
 import { MONEV_REPORT_SHEET, ensureMonevReport, prepareBlankMonevReport, isMonevReportComputedCell, MonevRenaksiPage } from './monevReport.jsx';
 
 const STORAGE_KEY = 'mahulu-dashboard-realisasi-v8';
@@ -17,6 +17,8 @@ const PERIOD_OPTIONS = [
 ];
 const queryPeriod = new URLSearchParams(window.location.search).get('period')||'annual';
 const INITIAL_PERIOD=PERIOD_OPTIONS.some(p=>p.value===queryPeriod)?queryPeriod:'annual';
+// Same 14 core sources consumed by the public SIKAP dashboard.
+const REQUIRED_DASHBOARD_SHEETS=['IKU','Rencana Aksi','Capaian Sasaran Strategis','Capaian Sasaran Program','Capaian Sasaran Kegiatan Utama','Capaian Sasaran Kegiatan(Penun)','Capaian Sasaran SUBKegiatan(U)','Capaian Sasaran SUBKegiatan (P)','Monev Renaksi IKU','Monev Program','Monev output Subkegiatan Utama','Monev Subkegiatan Penunjang','Rekap realisasi PKPT','Realisasi Fisik & Keu'];
 
 const IMPORT_AUDIT_KEY = `${STORAGE_KEY}:importAudit`;
 const IMPORT_BACKUP_KEY = `${STORAGE_KEY}:importBackup`;
@@ -433,7 +435,7 @@ function buildSchemaMapping(importedPayload, currentPayload){
     let best=null;
     for(const actual of importedNames){ if(used.has(actual)||!compatibleSheetNames(expected,actual)) continue; const score=similarity(expected,actual); if(!best||score>best.score)best={actual,score}; }
     const threshold=expected===best?.actual?1:(best?.score||0);
-    if(best && threshold>=0.48){ used.add(best.actual); rows.push({expected,actual:best.actual,score:+threshold.toFixed(2),status:best.actual===expected?'exact':'fuzzy'}); }
+    if(best && threshold>=0.82){ used.add(best.actual); rows.push({expected,actual:best.actual,score:+threshold.toFixed(2),status:best.actual===expected?'exact':'fuzzy'}); }
     else rows.push({expected,actual:'',score:0,status:'missing'});
   }
   for(const actual of importedNames.filter(n=>!used.has(n))) rows.push({expected:'',actual,score:0,status:'new'});
@@ -502,7 +504,7 @@ function validateImportPlan(importedPayload,currentPayload,mode,mapping,opts={})
   const stats=importSchemaStats(mapping); const warnings=[]; const errors=[];
   if(stats.missing>0 && mode!=='merge') warnings.push(`${stats.missing} sheet dari database saat ini tidak ditemukan di file import.`);
   if(stats.fuzzy>0) warnings.push(`${stats.fuzzy} sheet dipetakan berdasarkan kemiripan nama.`);
-  if(stats.newSheets>0) warnings.push(`${stats.newSheets} sheet baru ditemukan dan hanya akan ikut bila mode menggabungkan sheet.`);
+  if(stats.newSheets>0) warnings.push(`${stats.newSheets} sheet baru ditemukan dan akan ditambahkan dengan nama aslinya. Pastikan tidak ada nama yang salah sebelum mengimpor.`);
   const audit=formulaAudit(importedPayload);
   if(audit.errors>0) warnings.push(`${audit.errors} nilai error terdeteksi di file import.`);
   if(audit.external>0) warnings.push(`${audit.external} formula eksternal terdeteksi; nilai cache akan dipertahankan bila tersedia.`);
@@ -582,13 +584,21 @@ function updateYearStrings(value, year) {
 function normalizePayloadForYear(payload, year) {
   const out = clone(payload);
   out.meta = { ...(out.meta || {}), year: Number(year) };
-  if(Number(year)!==2026 && out.sheets?.[OFFICIAL_REPORT_2026]){
-    const renamed=`Laporan_Monev_Renaksi_${Number(year)}`;
-    out.sheets[renamed]={...out.sheets[OFFICIAL_REPORT_2026],name:renamed};
-    delete out.sheets[OFFICIAL_REPORT_2026];
+  // A newly copied year must not retain the old official report name.
+  // This applies when copying 2027→2028 too, not only 2026→2027.
+  const renamed=officialReportName(year);
+  for(const original of Object.keys(out.sheets||{})){
+    if(isOfficialReportName(original)&&original!==renamed){
+      out.sheets[renamed]={...out.sheets[original],name:renamed};
+      delete out.sheets[original];
+    }
   }
   for (const s of Object.values(out.sheets || {})) {
     s.values = (s.values || []).map((row) => row.map((v) => updateYearStrings(v, Number(year))));
+    if(s.formulas){
+      s.formulas=Object.fromEntries(Object.entries(s.formulas).map(([cell,formula])=>
+        [cell,String(formula).replace(/Laporan_Monev_Renaksi_20\d{2}/gi,renamed)]));
+    }
   }
   return out;
 }
@@ -883,6 +893,30 @@ useEffect(()=>{
     return()=>clearInterval(id);
   },[year,period,dirty,importModal]);
   const derived=useMemo(()=>payload?derive(payload):null,[payload]); const sheetNames=useMemo(()=>payload?Object.keys(payload.sheets||{}):[],[payload]);
+  const missingDashboardSheets=REQUIRED_DASHBOARD_SHEETS.filter(name=>!payload?.sheets?.[name]);
+  // Safe recovery for older V20 years in which only the analytical report was
+  // saved remotely.  Import only missing sheets, never clear existing data.
+  const repairDashboardSources=async()=>{
+    if(period!=='annual'||periodBusy||dirty||pendingCellsRef.current.size||pendingSheetsRef.current.size){setToast('Selesaikan penyimpanan dan pilih periode Tahunan terlebih dahulu.');return;}
+    if(!window.confirm(`Lengkapi ${missingDashboardSheets.length} sheet sumber Dashboard untuk TA ${year} dari template Excel resmi? Sheet yang sudah ada TIDAK akan ditimpa.`))return;
+    setPeriodBusy(true);
+    try{
+      const current=await fetchState(year,'annual');
+      const template=await fetchTemplate();
+      if(!template?.payload?.sheets)throw new Error('Template resmi belum tersedia.');
+      const source=normalizePayloadForYear(template.payload,year);
+      const liveSheets=current.needsImport?{}:(current.payload?.sheets||{});
+      const missing=Object.entries(source.sheets||{}).filter(([name])=>!liveSheets[name]).map(([name,sh])=>({...clone(sh),name}));
+      if(!missing.length){setToast('Semua sumber Dashboard sudah tersedia.');return;}
+      await importSheets(missing,year,'replace','annual');
+      const refreshed=await fetchState(year,'annual');
+      if(!refreshed?.ok)throw new Error('Gagal memverifikasi hasil impor.');
+      const fresh=recalculatePayload(ensureMonevReport(refreshed.payload,year).payload);
+      setPayload(fresh);setBaseline(clone(fresh));setYears(v=>({...v,[year]:fresh}));setDirty(false);pendingSheetsRef.current.clear();pendingCellsRef.current.clear();setSaveError('');
+      const left=REQUIRED_DASHBOARD_SHEETS.filter(name=>!fresh.sheets?.[name]);
+      setToast(left.length?`Masih ada ${left.length} sumber yang perlu diperiksa.`:`Semua 14 sumber Dashboard TA ${year} sudah tersedia di Google Sheets pusat.`);
+    }catch(e){setToast('Pemulihan sumber gagal: '+e.message);}finally{setPeriodBusy(false);}
+  };
   if(!payload||year===null)return <div className="loading"><div className="loading-orb"></div><div>{toast||"Memuat database kertas kerja…"}</div>{toast&&<button onClick={()=>window.location.reload()}>Coba lagi</button>}</div>;
   const update=(fn,sheetName=null,fastCell=null)=>{
     setPayload(prev=>{
@@ -1072,13 +1106,48 @@ useEffect(()=>{
     }catch(e){setToast('Gagal membuat periode: '+e.message)}finally{setPeriodBusy(false)}
   };
 
-  const createYear=(targetYear,mode)=>{if(period!=='annual')return setToast('Buat tahun baru pada tampilan Tahunan terlebih dahulu.');const y=Number(targetYear);if(!Number.isInteger(y)||y<2000||y>2100||years[y])return setToast('Tahun belum valid atau sudah tersedia');const next=mode==='blank'?blankDataRows(payload,y):normalizePayloadForYear(payload,y);const ensured=ensureMonevReport(next,y);const p=recalculatePayload(ensured.payload);const store={...years,[y]:p};setYears(store);setYear(y);setPayload(p);pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1);setDirty(true);setYearModal(false);setToast(`TA ${y} dibuat`)};
-  const renameYearData=(oldYear,newYear)=>{if(period!=='annual')return setToast('Ganti tahun pada tampilan Tahunan terlebih dahulu.');if(years[newYear])return setToast('Tahun tujuan sudah digunakan');const next=normalizePayloadForYear(years[oldYear],newYear);const ensured=ensureMonevReport(next,Number(newYear));const store={...years};delete store[oldYear];store[newYear]=recalculatePayload(ensured.payload);setYears(store);setYear(Number(newYear));setPayload(store[newYear]);pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1);setDirty(true);setYearEditModal(false);setToast(`Tahun diubah menjadi ${newYear}`)};
+  // Creating a year must PUBLISH every sheet to Google Sheets before showing
+  // the new year as saved. V20 changed only the in-memory year plus one pending
+  // analytical sheet, leaving public SIKAP unable to locate 2027's 14 sources.
+  const publishYear=async(targetYear,mode='copy')=>{
+    const y=Number(targetYear);
+    if(period!=='annual')return setToast('Buat tahun baru pada periode Tahunan terlebih dahulu.');
+    if(!Number.isInteger(y)||y<2000||y>2100||years[y]||periodBusy)return setToast('Tahun tidak valid, sedang diproses atau sudah tersedia.');
+    if(dirty||pendingCellsRef.current.size||pendingSheetsRef.current.size||savingRef.current||cellSavingRef.current)return setToast('Selesaikan penyimpanan TA aktif sebelum membuat tahun baru.');
+    setPeriodBusy(true);setToast(`Menyiapkan seluruh sheet TA ${y} pada Google Sheets pusat…`);
+    try{
+      // Never overwrite an existing year that another operator already made.
+      const existing=await fetchState(y,'annual');
+      const currentNames=new Set(existing.needsImport?[]:Object.keys(existing.payload?.sheets||{}));
+      const next=mode==='blank'?blankDataRows(payload,y):normalizePayloadForYear(payload,y);
+      const prepared=recalculatePayload(ensureMonevReport(next,y).payload);
+      // Old V20 may have created only the analytical sheet. Add the absent
+      // sources without overwriting anything already saved for the target year.
+      const sheetEntries=Object.entries(prepared.sheets||{}).filter(([name])=>!currentNames.has(name)).map(([name,sheet])=>({...clone(sheet),name}));
+      if(!sheetEntries.length)throw new Error(`TA ${y} sudah tersedia lengkap di Google Sheets pusat. Buka tahun tersebut, jangan timpa data yang sudah ada.`);
+      await importSheets(sheetEntries,y,'replace','annual');
+      const loaded=await fetchState(y,'annual');
+      if(loaded.needsImport||!loaded.payload?.sheets||Object.keys(loaded.payload.sheets).length<Math.min(14,sheetEntries.length))throw new Error('Publikasi TA baru tidak lengkap. Periksa Google Sheets sebelum melanjutkan.');
+      const fresh=recalculatePayload(loaded.payload);
+      setYears(prev=>({...prev,[y]:fresh}));setYear(y);setPeriod('annual');setPayload(fresh);setBaseline(clone(fresh));
+      pendingCellsRef.current.clear();pendingSheetsRef.current.clear();cellVersionsRef.current.clear();
+      remoteRevisionRef.current='';setDirty(false);setSaveError('');setPeriodMissing(false);setYearModal(false);setYearEditModal(false);
+      const url=new URL(window.location.href);url.searchParams.set('year',String(y));url.searchParams.set('period','annual');history.replaceState(null,'',url);
+      setToast(`Seluruh ${Object.keys(fresh.sheets).length} sheet TA ${y} sudah tersedia di Google Sheets pusat; Dashboard SIKAP dapat membacanya.`);
+    }catch(e){setToast(`TA ${y} belum berhasil dipublikasikan: ${e.message}`);}
+    finally{setPeriodBusy(false);}
+  };
+  const createYear=(targetYear,mode)=>publishYear(targetYear,mode);
+  const renameYearData=(oldYear,newYear)=>{
+    // Changing a label alone does NOT rename actual Google Sheets tabs. Make a
+    // new published year instead; keep the old year for audit and backup.
+    return publishYear(newYear,'copy');
+  };
   const openRowEditor=(sheet,row)=>setRowModal({sheet,row}); const commitRowEditor=(sheet,row,values)=>{values.forEach((v,c)=>{if(!payload.sheets[sheet].formulas?.[addr(row,c)]&&v!==payload.sheets[sheet].values[row]?.[c])updateCell(sheet,row,c,v);});setRowModal(null)};
   const exportActiveExcel=()=>exportExcelPayload(payload,year); const exportSheetExcel=()=>exportExcelPayload(payload,year,selectedSheet);
   const nav=[['dashboard','✦','Dashboard'],['realisasi','◒','Realisasi'],['kinerja','◫','Kinerja'],['renaksi','◇','Monev Renaksi'],['penugasan','◎','Penugasan'],['kertas','▦','Kertas Kerja'],['editor','✎','Edit & Input']];
   return <div className="app"><div className="ambient ambient-1"></div><div className="ambient ambient-2"></div><div className="ambient ambient-3"></div><div className="noise"></div>{officialReportMissing&&year===2026&&period==='annual'&&<div className="official-import-banner" role="status"><span><strong>Excel baru: laporan Monev resmi belum ada di Google Sheets.</strong> Tambahkan satu sheet resmi tanpa mengubah 14 sheet lain atau laporan analitik otomatis.</span><button disabled={reportInstalling||dirty} onClick={installOfficialReport}>{reportInstalling?'Memproses…':'Tambahkan Laporan Resmi'}</button></div>}<header className="topbar"><button className="menu-toggle" onClick={()=>setSidebarOpen(v=>!v)}>☰</button><div className="brand"><div className="brand-mark">ID</div><div><strong>{ORG}</strong><span>DATABASE REALISASI KINERJA • KERTAS KERJA & MONITORING</span></div></div><div className="top-right"><span className="live"><i></i> BACKEND • SECURE</span><button className={dirty?'save-badge dirty year-btn':'save-badge year-btn'} onClick={()=>setYearModal(true)}>{dirty?'MENYIMPAN…':'TERSIMPAN'}</button><button className="year year-btn" disabled={periodBusy} onClick={()=>setYearModal(true)}>TA {year} ▾</button>
-    <label className="period-select"><span>Periode</span><select aria-label="Periode laporan" disabled={periodBusy} value={period} onChange={e=>selectPeriod(e.target.value)}>{PERIOD_OPTIONS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}</select></label><a className="soft" href={import.meta.env.VITE_DASHBOARD_URL||"https://sikapinspektoratkabmahakamulu.pages.dev"} target="_blank" rel="noopener noreferrer">Dashboard ↗</a><button className="soft logout-btn" onClick={logout} title="Keluar dari sesi">Keluar</button></div></header><aside className={`sidebar ${sidebarOpen?'open':''}`}><div className="side-heading">KERTAS KERJA & MONITORING</div>{nav.map(([id,ic,label])=><button key={id} className={active===id?'nav active':'nav'} onClick={()=>{setActive(id);setSidebarOpen(false)}}><span>{ic}</span><b>{label}</b></button>)}<div className="side-summary"><small>{sheetNames.length} SHEET TERHUBUNG</small><strong>{ORG}</strong><em>Tahun aktif: {year} • {dirty?'Perubahan belum disimpan':'Siap dipantau'}</em></div></aside><main className="main">{saveError&&<section className="save-error-alert" role="alert"><div><strong>Perubahan belum tersimpan di Google Sheets.</strong><p>{saveError}</p><small>Autosave dihentikan sementara agar server tidak dibanjiri HTTP 503. Jangan menutup tab sebelum masalah diperbaiki. Perubahan lokal masih ada selama tab ini terbuka.</small></div><button className="primary" onClick={retrySave}>Coba simpan lagi</button><a href="/api/admin/diagnostics" target="_blank" rel="noopener noreferrer">Periksa koneksi</a></section>}{periodMissing?<section className="period-empty"><h2>Periode {PERIOD_OPTIONS.find(x=>x.value===period)?.label} belum dibuat</h2><p>Data tiap periode disimpan dalam kelompok sheet Google yang terpisah. Buat snapshot dari tahun anggaran utama sebelum mulai mengisi. Ini bukan agregasi otomatis bulanan.</p><button className="primary" disabled={periodBusy} onClick={initializePeriod}>{periodBusy?'Membuat periode…':'Buat periode dari TA utama'}</button><button className="soft" onClick={()=>selectPeriod('annual')}>Kembali ke data tahunan</button></section>:<>{active==='dashboard'&&<Dashboard derived={derived} year={year} onNav={setActive} onSheet={n=>{setSelectedSheet(n);setActive('kertas')}}/>}{active==='realisasi'&&<Realisasi payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Realisasi Fisik & Keu',row)}/>} {active==='kinerja'&&<Kinerja payload={payload} derived={derived} onEdit={(sheet,row=null)=>row===null?(setSelectedSheet(sheet),setActive('editor')):openRowEditor(sheet,row)}/>} {active==='renaksi'&&<MonevRenaksiPage payload={payload} updateCell={updateCell} year={year} dirty={dirty} onOpenSheet={()=>{setSelectedSheet(MONEV_REPORT_SHEET);setActive('editor')}}/>} {active==='penugasan'&&<Penugasan payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Rekap realisasi PKPT',row)} onAdd={()=>openRowEditor('Rekap realisasi PKPT','new')}/>} {active==='kertas'&&<KertasKerja payload={payload} derived={derived} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} query={query} setQuery={setQuery} selectedRow={selectedRow} setSelectedRow={setSelectedRow} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor(selectedSheet,row)} onAdd={()=>openRowEditor(selectedSheet,'new')} onExportSheet={exportSheetExcel} onImportExcel={()=>xlsxRef.current?.click()}/>} {active==='editor'&&<SpreadsheetEditor onCells={updateCellsBatch} payload={payload} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} onStructure={structure} onRefresh={reloadWorkbook} onTemplate={useTemplate} query={query} setQuery={setQuery} updateCell={updateCell} addRow={addRow} deleteRow={deleteRow} duplicateRow={duplicateRow} save={save} reset={reset} exportJson={exportJson} exportAllYears={exportAllYears} importJson={importJson} rollbackLastImport={rollbackLastImport} onAudit={()=>{setAuditEntries(readAudit());setAuditModal(true)}} onImportExcel={()=>xlsxRef.current?.click()} exportExcel={exportActiveExcel} exportSheetExcel={exportSheetExcel} fileRef={fileRef} dirty={dirty} saveError={saveError}/>}</>}</main>{toast&&<div className="toast">{toast}</div>}{yearModal&&<YearManagerModal years={years} activeYear={year} dirty={dirty} onClose={()=>setYearModal(false)} onSwitch={switchYear} onCreate={createYear} onRename={()=>setYearEditModal(true)} onSave={save} onExportAll={exportAllYears}/>} {yearEditModal&&<YearEditModal currentYear={year} onClose={()=>setYearEditModal(false)} onRename={v=>renameYearData(year,Number(v))}/>} {rowModal&&<RowEditorModal payload={payload} sheetName={rowModal.sheet} rowIndex={rowModal.row} onClose={()=>setRowModal(null)} onSave={commitRowEditor} onAdd={(sheet,values)=>{addRow(sheet,values);setRowModal(null)}}/>} {importModal&&<ImportExcelModal info={importModal} onClose={()=>setImportModal(null)} onApply={commitImported}/>} {auditModal&&<AuditModal entries={auditEntries} onClose={()=>setAuditModal(false)} onExport={exportAudit}/>} <input hidden ref={xlsxRef} type="file" accept=".xlsx,.xls" onChange={onExcelSelected}/></div>;
+    <label className="period-select"><span>Periode</span><select aria-label="Periode laporan" disabled={periodBusy} value={period} onChange={e=>selectPeriod(e.target.value)}>{PERIOD_OPTIONS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}</select></label><a className="soft" href={import.meta.env.VITE_DASHBOARD_URL||"https://sikapinspektoratkabmahakamulu.pages.dev"} target="_blank" rel="noopener noreferrer">Dashboard ↗</a><button className="soft logout-btn" onClick={logout} title="Keluar dari sesi">Keluar</button></div></header><aside className={`sidebar ${sidebarOpen?'open':''}`}><div className="side-heading">KERTAS KERJA & MONITORING</div>{nav.map(([id,ic,label])=><button key={id} className={active===id?'nav active':'nav'} onClick={()=>{setActive(id);setSidebarOpen(false)}}><span>{ic}</span><b>{label}</b></button>)}<div className="side-summary"><small>{sheetNames.length} SHEET TERHUBUNG</small><strong>{ORG}</strong><em>Tahun aktif: {year} • {dirty?'Perubahan belum disimpan':'Siap dipantau'}</em></div></aside><main className="main">{period==='annual'&&missingDashboardSheets.length>0&&<section className="year-missing-banner" role="status"><div><strong>{missingDashboardSheets.length} dari 14 sheet sumber Dashboard belum ada pada TA {year}.</strong><p>Tahun mungkin baru tersimpan sebagian. Lengkapi hanya sheet yang hilang dari template Excel resmi, tanpa menimpa sheet yang sudah diisi.</p><small>{missingDashboardSheets.join(' • ')}</small></div><button className="primary" disabled={periodBusy||dirty} onClick={repairDashboardSources}>{periodBusy?'Memeriksa…':'Lengkapi sheet yang hilang'}</button></section>}{saveError&&<section className="save-error-alert" role="alert"><div><strong>Perubahan belum tersimpan di Google Sheets.</strong><p>{saveError}</p><small>Autosave dihentikan sementara agar server tidak dibanjiri HTTP 503. Jangan menutup tab sebelum masalah diperbaiki. Perubahan lokal masih ada selama tab ini terbuka.</small></div><button className="primary" onClick={retrySave}>Coba simpan lagi</button><a href="/api/admin/diagnostics" target="_blank" rel="noopener noreferrer">Periksa koneksi</a></section>}{periodMissing?<section className="period-empty"><h2>Periode {PERIOD_OPTIONS.find(x=>x.value===period)?.label} belum dibuat</h2><p>Data tiap periode disimpan dalam kelompok sheet Google yang terpisah. Buat snapshot dari tahun anggaran utama sebelum mulai mengisi. Ini bukan agregasi otomatis bulanan.</p><button className="primary" disabled={periodBusy} onClick={initializePeriod}>{periodBusy?'Membuat periode…':'Buat periode dari TA utama'}</button><button className="soft" onClick={()=>selectPeriod('annual')}>Kembali ke data tahunan</button></section>:<>{active==='dashboard'&&<Dashboard derived={derived} year={year} onNav={setActive} onSheet={n=>{setSelectedSheet(n);setActive('kertas')}}/>}{active==='realisasi'&&<Realisasi payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Realisasi Fisik & Keu',row)}/>} {active==='kinerja'&&<Kinerja payload={payload} derived={derived} onEdit={(sheet,row=null)=>row===null?(setSelectedSheet(sheet),setActive('editor')):openRowEditor(sheet,row)}/>} {active==='renaksi'&&<MonevRenaksiPage payload={payload} updateCell={updateCell} year={year} dirty={dirty} onOpenSheet={()=>{setSelectedSheet(MONEV_REPORT_SHEET);setActive('editor')}}/>} {active==='penugasan'&&<Penugasan payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Rekap realisasi PKPT',row)} onAdd={()=>openRowEditor('Rekap realisasi PKPT','new')}/>} {active==='kertas'&&<KertasKerja payload={payload} derived={derived} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} query={query} setQuery={setQuery} selectedRow={selectedRow} setSelectedRow={setSelectedRow} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor(selectedSheet,row)} onAdd={()=>openRowEditor(selectedSheet,'new')} onExportSheet={exportSheetExcel} onImportExcel={()=>xlsxRef.current?.click()}/>} {active==='editor'&&<SpreadsheetEditor onCells={updateCellsBatch} payload={payload} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} onStructure={structure} onRefresh={reloadWorkbook} onTemplate={useTemplate} query={query} setQuery={setQuery} updateCell={updateCell} addRow={addRow} deleteRow={deleteRow} duplicateRow={duplicateRow} save={save} reset={reset} exportJson={exportJson} exportAllYears={exportAllYears} importJson={importJson} rollbackLastImport={rollbackLastImport} onAudit={()=>{setAuditEntries(readAudit());setAuditModal(true)}} onImportExcel={()=>xlsxRef.current?.click()} exportExcel={exportActiveExcel} exportSheetExcel={exportSheetExcel} fileRef={fileRef} dirty={dirty} saveError={saveError}/>}</>}</main>{toast&&<div className="toast">{toast}</div>}{yearModal&&<YearManagerModal years={years} activeYear={year} dirty={dirty} onClose={()=>setYearModal(false)} onSwitch={switchYear} onCreate={createYear} onRename={()=>setYearEditModal(true)} onSave={save} onExportAll={exportAllYears}/>} {yearEditModal&&<YearEditModal currentYear={year} onClose={()=>setYearEditModal(false)} onRename={v=>renameYearData(year,Number(v))}/>} {rowModal&&<RowEditorModal payload={payload} sheetName={rowModal.sheet} rowIndex={rowModal.row} onClose={()=>setRowModal(null)} onSave={commitRowEditor} onAdd={(sheet,values)=>{addRow(sheet,values);setRowModal(null)}}/>} {importModal&&<ImportExcelModal info={importModal} onClose={()=>setImportModal(null)} onApply={commitImported}/>} {auditModal&&<AuditModal entries={auditEntries} onClose={()=>setAuditModal(false)} onExport={exportAudit}/>} <input hidden ref={xlsxRef} type="file" accept=".xlsx,.xls" onChange={onExcelSelected}/></div>;
 }
 function Dashboard({ derived, year, onNav, onSheet }) {
   const [pulse, setPulse] = useState(0); const [detail, setDetail] = useState(null);
@@ -1185,8 +1254,8 @@ function RowEditorModal({ payload, sheetName, rowIndex, onClose, onSave, onAdd }
 }
 function isComputedDataSheet(name) { return name === 'Realisasi Fisik & Keu' || name.startsWith('Capaian Sasaran'); }
 
-function YearManagerModal({ years, activeYear, dirty, onClose, onSwitch, onCreate, onRename, onSave, onExportAll }) { const [newYear, setNewYear] = useState(activeYear + 1); const [mode, setMode] = useState('copy'); const available = Object.keys(years).map(Number).sort((a, b) => b - a); return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className="year-modal"><div className="modal-head"><div><span className="eyebrow">MANAJEMEN TAHUN ANGGARAN</span><h2>Tahun aktif: {activeYear}</h2><p>Setiap tahun memiliki database sendiri. Anda bisa menambah tahun, menyalin data, atau membuat template kosong.</p></div><button className="close" onClick={onClose}>×</button></div><div className="year-list">{available.map(y => <button key={y} className={y === activeYear ? 'year-item active' : 'year-item'} onClick={() => y !== activeYear && onSwitch(y)}><span>TA {y}</span><small>{y === activeYear ? 'Aktif sekarang' : 'Buka tahun ini'}</small><b>{years[y]?.meta?.sheetCount || Object.keys(years[y]?.sheets || {}).length} sheet</b></button>)}</div><div className="new-year-box"><span className="eyebrow">TAMBAH TAHUN BARU</span><div className="new-year-row"><input type="number" min="2000" max="2100" value={newYear} onChange={e => setNewYear(e.target.value)} /><select value={mode} onChange={e => setMode(e.target.value)}><option value="copy">Salin data tahun aktif</option><option value="blank">Buat template kosong</option></select><button className="primary" onClick={() => onCreate(newYear, mode)}>＋ Tambah Tahun</button></div><small>Salin data mempertahankan struktur dan isi; template kosong mempertahankan struktur namun membersihkan baris data transaksi.</small></div><div className="year-foot"><span>{dirty ? 'Ada perubahan yang belum disimpan.' : 'Semua perubahan sudah tersimpan.'}</span><div><button className="soft" onClick={onRename}>✎ Ganti label tahun</button><button className="soft" onClick={onExportAll}>⇩ Export semua</button><button className="primary" onClick={onSave}>✓ Simpan tahun aktif</button></div></div></div></div>; }
-function YearEditModal({ currentYear, onClose, onRename }) { const [value, setValue] = useState(currentYear); return <div className="modal-backdrop"><div className="small-modal"><div className="modal-head"><div><span className="eyebrow">UBAH TAHUN</span><h2>Ganti tahun aktif</h2><p>Gunakan hanya bila Anda benar-benar ingin mengganti label tahun database.</p></div><button className="close" onClick={onClose}>×</button></div><label className="single-field"><span>Tahun baru</span><input type="number" value={value} onChange={e => setValue(e.target.value)} /></label><div className="modal-foot"><button className="ghost" onClick={onClose}>Batal</button><button className="primary" onClick={() => onRename(value)}>✓ Ubah tahun</button></div></div></div>; }
+function YearManagerModal({ years, activeYear, dirty, onClose, onSwitch, onCreate, onRename, onSave, onExportAll }) { const [newYear, setNewYear] = useState(activeYear + 1); const [mode, setMode] = useState('copy'); const available = Object.keys(years).map(Number).sort((a, b) => b - a); return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className="year-modal"><div className="modal-head"><div><span className="eyebrow">MANAJEMEN TAHUN ANGGARAN</span><h2>Tahun aktif: {activeYear}</h2><p>Setiap tahun memiliki database sendiri. Anda bisa menambah tahun, menyalin data, atau membuat template kosong.</p></div><button className="close" onClick={onClose}>×</button></div><div className="year-list">{available.map(y => <button key={y} className={y === activeYear ? 'year-item active' : 'year-item'} onClick={() => y !== activeYear && onSwitch(y)}><span>TA {y}</span><small>{y === activeYear ? 'Aktif sekarang' : 'Buka tahun ini'}</small><b>{years[y]?.meta?.sheetCount || Object.keys(years[y]?.sheets || {}).length} sheet</b></button>)}</div><div className="new-year-box"><span className="eyebrow">TAMBAH TAHUN BARU</span><div className="new-year-row"><input type="number" min="2000" max="2100" value={newYear} onChange={e => setNewYear(e.target.value)} /><select value={mode} onChange={e => setMode(e.target.value)}><option value="copy">Salin data tahun aktif</option><option value="blank">Buat template kosong</option></select><button className="primary" onClick={() => onCreate(newYear, mode)}>＋ Tambah Tahun</button></div><small>Salin data mempertahankan struktur dan isi; template kosong mempertahankan struktur namun membersihkan baris data transaksi.</small></div><div className="year-foot"><span>{dirty ? 'Ada perubahan yang belum disimpan.' : 'Tahun baru disimpan ke Google sebelum ditampilkan.'}</span><div><button className="soft" onClick={onRename}>Salin ke tahun lain</button><button className="soft" onClick={onExportAll}>⇩ Export semua</button><button className="primary" onClick={onSave}>✓ Simpan tahun aktif</button></div></div></div></div>; }
+function YearEditModal({ currentYear, onClose, onRename }) { const [value, setValue] = useState(currentYear); return <div className="modal-backdrop"><div className="small-modal"><div className="modal-head"><div><span className="eyebrow">UBAH TAHUN</span><h2>Salin ke tahun baru</h2><p>Buat salinan tahun ke Google Sheets tanpa menghapus tahun sebelumnya untuk menjaga jejak audit.</p></div><button className="close" onClick={onClose}>×</button></div><label className="single-field"><span>Tahun baru</span><input type="number" value={value} onChange={e => setValue(e.target.value)} /></label><div className="modal-foot"><button className="ghost" onClick={onClose}>Batal</button><button className="primary" onClick={() => onRename(value)}>✓ Buat salinan tahun</button></div></div></div>; }
 
 
 function LoginGate(){

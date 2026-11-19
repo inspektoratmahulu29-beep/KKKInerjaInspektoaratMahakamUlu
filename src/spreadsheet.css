@@ -8,3 +8,20 @@
 .spreadsheet-grid.windowed-grid .virtual-spacer td{background:transparent!important;pointer-events:none;max-height:none!important}
 .spreadsheet-grid td textarea{min-height:70px;white-space:pre-wrap}
 .sheet-workspace :focus-visible{outline:2px solid #07816b;outline-offset:2px}
+
+/* V21 — accessible Excel-style zoom. Grid rows and columns scale together. */
+.sheet-zoom-controls{margin-left:6px;display:inline-flex;gap:6px;align-items:center;padding:5px 8px;border:1px solid #c5d9dc;background:#fff;border-radius:12px;white-space:nowrap;box-shadow:0 4px 16px #133e4710}
+.sheet-zoom-controls button{display:grid;place-items:center;min-width:29px;height:29px;padding:4px 7px;border-radius:8px;color:#176256;background:#eaf6f2;border:1px solid #cee8dd;cursor:pointer}
+.sheet-zoom-controls button:disabled{opacity:.35;cursor:not-allowed}
+.sheet-zoom-controls button:hover:not(:disabled){background:#d4eee5}
+.sheet-zoom-controls button svg{width:17px;height:17px}
+.sheet-zoom-controls input[type=range]{width:104px;accent-color:#218b74;cursor:pointer}
+.sheet-zoom-controls output{min-width:40px;font-size:12px;text-align:center;font-weight:750;color:#155149;font-variant-numeric:tabular-nums}
+.sheet-zoom-controls .sheet-zoom-reset{background:#fff;color:#466e72;border-color:#c4d4d8;min-width:43px}
+.spreadsheet-grid th{height:var(--zoom-header-height,29px);padding:calc(var(--zoom-cell-pad,7px) * .72);font-size:1em}
+.spreadsheet-grid td{padding:var(--zoom-cell-pad,7px) calc(var(--zoom-cell-pad,7px) * 1.2);line-height:1.45}
+.spreadsheet-grid.windowed-grid tbody tr:not(.virtual-spacer){height:var(--zoom-row-height,39px);max-height:var(--zoom-row-height,39px)}
+.spreadsheet-grid.windowed-grid td{height:var(--zoom-row-height,39px);max-height:var(--zoom-row-height,39px);padding:var(--zoom-cell-pad,7px) calc(var(--zoom-cell-pad,7px) * 1.2)}
+.spreadsheet-grid.windowed-grid td>span{max-height:calc(var(--zoom-row-height,39px) - 12px)}
+@media(max-width:800px){.sheet-zoom-controls{margin-left:0}.sheet-zoom-controls input[type=range]{width:75px}.sheet-tools label{margin-left:0}}
+@media(prefers-reduced-motion:reduce){.sheet-zoom-controls,.sheet-zoom-controls button{transition:none}}

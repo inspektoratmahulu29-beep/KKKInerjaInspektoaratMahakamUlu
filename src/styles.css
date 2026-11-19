@@ -296,3 +296,9 @@
 /* V19 — explicit, non-destructive migration of the official Monev worksheet. */
 .official-import-banner{position:relative;z-index:15;background:#142f33;border-bottom:1px solid #59827a;color:#e7fff4;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:13px;line-height:1.5}
 .official-import-banner strong{display:block;color:#b5edd4}.official-import-banner button{flex:none;background:#b4e3d4;color:#102e2e;border:0;border-radius:12px;padding:11px 16px;font-weight:700;cursor:pointer}.official-import-banner button:disabled{opacity:.5;cursor:not-allowed}
+
+/* V21: clearly mark incomplete source years, with safe non-destructive repair. */
+.year-missing-banner{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:18px 22px;margin:0 0 18px;border:1px solid rgba(221,175,85,.4);background:rgba(230,194,116,.1);border-radius:15px;color:#fff9e6}
+.year-missing-banner strong{display:block;font-size:14px}.year-missing-banner p{margin:6px 0;color:#e8d9b2;font-size:12px;line-height:1.7}.year-missing-banner small{display:block;font-size:10px;line-height:1.7;color:#bfad8a;overflow-wrap:anywhere}
+.year-missing-banner button{white-space:nowrap;flex:none}.year-missing-banner button:disabled{opacity:.55}
+@media(max-width:800px){.year-missing-banner{flex-direction:column;align-items:stretch}.year-missing-banner button{white-space:normal}}
