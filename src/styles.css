@@ -292,3 +292,7 @@
 /* V18: autosave failures remain visible until verified, no silent 503 loop */
 .save-error-alert{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:12px 12px 18px;padding:14px 16px;border:1px solid #e1a05f;border-radius:12px;background:#fff6ec;color:#68390c;box-shadow:0 2px 10px #00000014}
 .save-error-alert div{flex:1;min-width:230px}.save-error-alert strong{font-weight:750}.save-error-alert p{margin:6px 0;overflow-wrap:anywhere}.save-error-alert small{display:block;line-height:1.4}.save-error-alert a{color:#6a430c;text-decoration:underline}
+
+/* V19 — explicit, non-destructive migration of the official Monev worksheet. */
+.official-import-banner{position:relative;z-index:15;background:#142f33;border-bottom:1px solid #59827a;color:#e7fff4;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:13px;line-height:1.5}
+.official-import-banner strong{display:block;color:#b5edd4}.official-import-banner button{flex:none;background:#b4e3d4;color:#102e2e;border:0;border-radius:12px;padding:11px 16px;font-weight:700;cursor:pointer}.official-import-banner button:disabled{opacity:.5;cursor:not-allowed}

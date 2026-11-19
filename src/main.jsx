@@ -4,7 +4,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
 import './styles.css';
-import { adminMe, adminLogin, adminLogout, fetchState, saveState, saveSheet, saveCells, importSheet, importSheets, fetchRevision, pushAudit, changeStructure, fetchTemplate } from './adminApi.js';
+import { adminMe, adminLogin, adminLogout, fetchState, saveState, saveSheet, saveCells, importSheet, importSheets, fetchRevision, pushAudit, changeStructure, fetchTemplate, addOfficialMonev } from './adminApi.js';
+import { OFFICIAL_REPORT_2026,compatibleSheetNames } from '../functions/lib/report-schema.js';
 import { MONEV_REPORT_SHEET, ensureMonevReport, prepareBlankMonevReport, isMonevReportComputedCell, MonevRenaksiPage } from './monevReport.jsx';
 
 const STORAGE_KEY = 'mahulu-dashboard-realisasi-v8';
@@ -100,12 +101,13 @@ const sheetMeta = {
   'Monev Subkegiatan Penunjang': { group: 'Monitoring & Evaluasi', role: 'Monev output subkegiatan penunjang', dataStart: 6, activityCol: 7, outputCol: 10 },
   'Rekap realisasi PKPT': { group: 'Penugasan', role: 'Rekap penugasan pembinaan dan pengawasan', dataStart: 6, statusCol: 4, activityCol: 3 },
   'Realisasi Fisik & Keu': { group: 'Realisasi', role: 'Realisasi fisik dan keuangan', dataStart: 9, budget: 2, physical: 4, financial: 6, financialPct: 7, weightedPhysical: 5, weightedFinancial: 8, remaining: 9, weight: 3 },
-  [MONEV_REPORT_SHEET]: { group: 'Monitoring & Evaluasi', role: 'Laporan Monev Renaksi: KPI per TW + realisasi fisik/keuangan bulanan dan TW', dataStart: 0 }
+  [OFFICIAL_REPORT_2026]: { group: 'Monitoring & Evaluasi', role: 'Laporan Monev Renaksi resmi: sasaran, TW1–TW4, pagu, realisasi, catatan, tindak lanjut, dan penanggung jawab (Excel 2026)', dataStart: 8, budget: 19, budgetReal: 20 },
+  [MONEV_REPORT_SHEET]: { group: 'Monitoring & Evaluasi', role: 'Analitik Monev otomatis (terpisah dari laporan resmi)', dataStart: 0 }
 };
 
 
 const knownSheetRanges = {
-  'IKU':'A1:L7','Rencana Aksi':'A1:M37','Capaian Sasaran Strategis':'A1:K11','Capaian Sasaran Program':'A1:L13','Capaian Sasaran Kegiatan Utama':'A1:M6','Capaian Sasaran Kegiatan(Penun)':'A1:N10','Capaian Sasaran SUBKegiatan(U)':'A1:N15','Capaian Sasaran SUBKegiatan (P)':'A1:O12','Monev Renaksi IKU':'A1:R34','Monev Program':'A1:X36','Monev output Subkegiatan Utama':'A1:P60','Monev Subkegiatan Penunjang':'A1:M31','Rekap realisasi PKPT':'A1:R107','Realisasi Fisik & Keu':'A1:K54'
+  'IKU':'A1:L7','Rencana Aksi':'A1:M37','Capaian Sasaran Strategis':'A1:K11','Capaian Sasaran Program':'A1:L13','Capaian Sasaran Kegiatan Utama':'A1:M6','Capaian Sasaran Kegiatan(Penun)':'A1:N10','Capaian Sasaran SUBKegiatan(U)':'A1:N15','Capaian Sasaran SUBKegiatan (P)':'A1:O12','Monev Renaksi IKU':'A1:R34','Monev Program':'A1:X36','Monev output Subkegiatan Utama':'A1:P60','Monev Subkegiatan Penunjang':'A1:M31','Rekap realisasi PKPT':'A1:R107','Realisasi Fisik & Keu':'A1:K54',[OFFICIAL_REPORT_2026]:'A1:X22'
 };
 const formulaSpecs = {
   'IKU': { inputs: ['A:L'], computed: [], note: 'Indikator kinerja utama dan target tahunan merupakan input sumber.' },
@@ -122,6 +124,7 @@ const formulaSpecs = {
   'Monev Subkegiatan Penunjang': { inputs: ['H','I','J','K','L','M'], computed: ['Virtual output count'], note: 'Aktivitas, pengampu, PPTK, jumlah output, kendala, dan solusi merupakan input; jumlah output dipakai otomatis untuk KPI.' },
   'Rekap realisasi PKPT': { inputs: ['D:E','J:L'], computed: ['Virtual % penyelesaian'], note: 'Progress penugasan = realisasi ÷ target × 100 saat angka tersedia.' },
   'Realisasi Fisik & Keu': { inputs: ['C','K'], computed: ['D','E','F','H','I','J'], note: 'C anggaran dan K permasalahan dapat diedit. E realisasi fisik dihitung otomatis dari H sesuai rumus template (I/D x 100 secara aljabar = H). G realisasi keuangan adalah nilai sumber/hasil import pada detail; G pada baris program dan total dijumlahkan otomatis. D/F/H/I/J dihitung otomatis.' },
+  [OFFICIAL_REPORT_2026]: { inputs: ['F:M','O:X'], computed: [], note: 'Sheet laporan resmi sumber Excel 2026, tanpa rumus tambahan. Kolom U (realisasi) kosong dalam file sumber; isi aktual ketika tersedia. Jangan samakan data kosong dengan nol.' },
   [MONEV_REPORT_SHEET]: { inputs: ['C:F pada tabel bulanan'], computed: ['KPI per TW','Serapan bulanan','Rekap TW'], note: 'KPI per TW diselaraskan dari Monev Renaksi IKU. Target/realisasi fisik dan keuangan diinput per bulan; serapan dan rekap TW dihitung otomatis.' }
 };
 
@@ -402,6 +405,7 @@ function canonicalizeSheets(sheets, canonicalNames){
     let best=null;
     for(const c of canon){
       if(out[c]) continue;
+      if(!compatibleSheetNames(n,c))continue;
       const score=similarity(n,c);
       if(score>=0.82 && (!best||score>best.score)) best={c,score};
     }
@@ -427,7 +431,7 @@ function buildSchemaMapping(importedPayload, currentPayload){
   const used=new Set(); const rows=[];
   for(const expected of currentNames){
     let best=null;
-    for(const actual of importedNames){ if(used.has(actual)) continue; const score=similarity(expected,actual); if(!best||score>best.score)best={actual,score}; }
+    for(const actual of importedNames){ if(used.has(actual)||!compatibleSheetNames(expected,actual)) continue; const score=similarity(expected,actual); if(!best||score>best.score)best={actual,score}; }
     const threshold=expected===best?.actual?1:(best?.score||0);
     if(best && threshold>=0.48){ used.add(best.actual); rows.push({expected,actual:best.actual,score:+threshold.toFixed(2),status:best.actual===expected?'exact':'fuzzy'}); }
     else rows.push({expected,actual:'',score:0,status:'missing'});
@@ -578,6 +582,11 @@ function updateYearStrings(value, year) {
 function normalizePayloadForYear(payload, year) {
   const out = clone(payload);
   out.meta = { ...(out.meta || {}), year: Number(year) };
+  if(Number(year)!==2026 && out.sheets?.[OFFICIAL_REPORT_2026]){
+    const renamed=`Laporan_Monev_Renaksi_${Number(year)}`;
+    out.sheets[renamed]={...out.sheets[OFFICIAL_REPORT_2026],name:renamed};
+    delete out.sheets[OFFICIAL_REPORT_2026];
+  }
   for (const s of Object.values(out.sheets || {})) {
     s.values = (s.values || []).map((row) => row.map((v) => updateYearStrings(v, Number(year))));
   }
@@ -745,8 +754,8 @@ function payloadDiffSummary(before,after){
   return {sheetsChanged,cellsChanged,rowsAdded,rowsRemoved};
 }
 function EditorApp(){
-  const [payload,setPayload]=useState(null),[baseline,setBaseline]=useState(null),[years,setYears]=useState({}),[year,setYear]=useState(null),[active,setActive]=useState('dashboard'),[selectedSheet,setSelectedSheet]=useState('Realisasi Fisik & Keu'),[query,setQuery]=useState(''),[selectedRow,setSelectedRow]=useState(null),[dirty,setDirty]=useState(false),[saveError,setSaveError]=useState(''),[period,setPeriod]=useState(INITIAL_PERIOD),[periodMissing,setPeriodMissing]=useState(false),[periodBusy,setPeriodBusy]=useState(false),[toast,setToast]=useState(''),[sidebarOpen,setSidebarOpen]=useState(false),[yearModal,setYearModal]=useState(false),[rowModal,setRowModal]=useState(null),[yearEditModal,setYearEditModal]=useState(false),[importModal,setImportModal]=useState(null),[auditModal,setAuditModal]=useState(false),[auditEntries,setAuditEntries]=useState([]),fileRef=useRef(null),xlsxRef=useRef(null),pendingSheetsRef=useRef(new Map()),pendingCellsRef=useRef(new Map()),cellVersionsRef=useRef(new Map()),savingRef=useRef(false),cellSavingRef=useRef(false),remoteRevisionRef=useRef(''),editVersionRef=useRef(0),saveBlockedRef=useRef(false),formulaTimerRef=useRef(null),activeScopeRef=useRef({year:null,period:INITIAL_PERIOD});
-  useEffect(()=>{(async()=>{try{await initLocalStores();setAuditEntries(auditCache);const me=await adminMe();if(!me.ok) throw Object.assign(new Error('Sesi admin tidak valid. Silakan login kembali.'),{status:401});const urlYear=Number(new URLSearchParams(window.location.search).get('year'));const target=(Number.isInteger(urlYear)&&urlYear>=2000&&urlYear<=2100?urlYear:0)||Number(localStorage.getItem(`${STORAGE_KEY}:activeYear`))||2026;const resp=await fetchState(target,INITIAL_PERIOD);if(!resp.ok||!resp.payload?.sheets) throw Object.assign(new Error(resp.message||'Database backend tidak mengembalikan sheet'),{status:resp.status||500});const selectedYear=Number(resp.year||target);const ensured=ensureMonevReport(recalculatePayload(resp.payload),selectedYear);const base=recalculatePayload(ensured.payload);setBaseline(clone(base));const current=recalculatePayload(clone(ensured.payload));setYears({[selectedYear]:current});setYear(selectedYear);setSelectedSheet(current.sheets?.['Realisasi Fisik & Keu']?'Realisasi Fisik & Keu':Object.keys(current.sheets||{})[0]||'');setPayload(current);setPeriodMissing(Boolean(resp.needsImport&&INITIAL_PERIOD!=='annual'));if(ensured.changed) { pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1); setDirty(true); } else setDirty(false);setToast(resp.needsImport?'Spreadsheet siap — TA ini belum diinisialisasi, gunakan Import Excel.':resp.source==='google-sheets'?'Terhubung ke database Google Sheets':'Mode seed server');}catch(e){if(e?.status===401) window.dispatchEvent(new CustomEvent('admin-auth-required'));setToast('Memuat database gagal: '+e.message);setPayload(null)}})()},[]);
+  const [officialReportMissing,setOfficialReportMissing]=useState(false),[reportInstalling,setReportInstalling]=useState(false),[payload,setPayload]=useState(null),[baseline,setBaseline]=useState(null),[years,setYears]=useState({}),[year,setYear]=useState(null),[active,setActive]=useState('dashboard'),[selectedSheet,setSelectedSheet]=useState('Realisasi Fisik & Keu'),[query,setQuery]=useState(''),[selectedRow,setSelectedRow]=useState(null),[dirty,setDirty]=useState(false),[saveError,setSaveError]=useState(''),[period,setPeriod]=useState(INITIAL_PERIOD),[periodMissing,setPeriodMissing]=useState(false),[periodBusy,setPeriodBusy]=useState(false),[toast,setToast]=useState(''),[sidebarOpen,setSidebarOpen]=useState(false),[yearModal,setYearModal]=useState(false),[rowModal,setRowModal]=useState(null),[yearEditModal,setYearEditModal]=useState(false),[importModal,setImportModal]=useState(null),[auditModal,setAuditModal]=useState(false),[auditEntries,setAuditEntries]=useState([]),fileRef=useRef(null),xlsxRef=useRef(null),pendingSheetsRef=useRef(new Map()),pendingCellsRef=useRef(new Map()),cellVersionsRef=useRef(new Map()),savingRef=useRef(false),cellSavingRef=useRef(false),remoteRevisionRef=useRef(''),editVersionRef=useRef(0),saveBlockedRef=useRef(false),formulaTimerRef=useRef(null),activeScopeRef=useRef({year:null,period:INITIAL_PERIOD});
+  useEffect(()=>{(async()=>{try{await initLocalStores();setAuditEntries(auditCache);const me=await adminMe();if(!me.ok) throw Object.assign(new Error('Sesi admin tidak valid. Silakan login kembali.'),{status:401});const urlYear=Number(new URLSearchParams(window.location.search).get('year'));const target=(Number.isInteger(urlYear)&&urlYear>=2000&&urlYear<=2100?urlYear:0)||Number(localStorage.getItem(`${STORAGE_KEY}:activeYear`))||2026;const resp=await fetchState(target,INITIAL_PERIOD);if(!resp.ok||!resp.payload?.sheets) throw Object.assign(new Error(resp.message||'Database backend tidak mengembalikan sheet'),{status:resp.status||500});const selectedYear=Number(resp.year||target);setOfficialReportMissing(Boolean(resp.officialMonevMissing)&&!resp.needsImport);const ensured=ensureMonevReport(recalculatePayload(resp.payload),selectedYear);const base=recalculatePayload(ensured.payload);setBaseline(clone(base));const current=recalculatePayload(clone(ensured.payload));setYears({[selectedYear]:current});setYear(selectedYear);setSelectedSheet(current.sheets?.['Realisasi Fisik & Keu']?'Realisasi Fisik & Keu':Object.keys(current.sheets||{})[0]||'');setPayload(current);setPeriodMissing(Boolean(resp.needsImport&&INITIAL_PERIOD!=='annual'));if(ensured.changed) { pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1); setDirty(true); } else setDirty(false);setToast(resp.needsImport?'Spreadsheet siap — TA ini belum diinisialisasi, gunakan Import Excel.':resp.source==='google-sheets'?'Terhubung ke database Google Sheets':'Mode seed server');}catch(e){if(e?.status===401) window.dispatchEvent(new CustomEvent('admin-auth-required'));setToast('Memuat database gagal: '+e.message);setPayload(null)}})()},[]);
 useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),3200);return()=>clearTimeout(t)},[toast]);
   useEffect(()=>()=>{if(formulaTimerRef.current)clearTimeout(formulaTimerRef.current);},[]);
   useEffect(()=>{activeScopeRef.current={year,period};if(formulaTimerRef.current){clearTimeout(formulaTimerRef.current);formulaTimerRef.current=null;}},[year,period]);
@@ -767,6 +776,20 @@ useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),3200);return
     },3500);
   };
   const retrySave=()=>{saveBlockedRef.current=false;setSaveError('');setPayload(p=>p?({...p}):p);};
+  const installOfficialReport=async()=>{
+    if(year!==2026||period!=='annual'||reportInstalling)return;
+    if(dirty||savingRef.current||cellSavingRef.current||pendingCellsRef.current.size||pendingSheetsRef.current.size){setToast('Simpan seluruh perubahan terlebih dahulu sebelum menambahkan laporan resmi.');return;}
+    if(!window.confirm('Tambahkan HANYA sheet Laporan_Monev_Renaksi_2026 sesuai Excel terbaru? Semua sheet dan isian lain tetap dipertahankan.'))return;
+    setReportInstalling(true);
+    try{
+      const result=await addOfficialMonev();
+      const resp=await fetchState(2026,'annual');
+      if(!resp?.ok)throw new Error(resp?.message||'Gagal memuat laporan terbaru');
+      setPayload(resp.payload);setBaseline(clone(resp.payload));setYears(prev=>({...prev,[2026]:resp.payload}));setOfficialReportMissing(Boolean(resp.officialMonevMissing));
+      setToast(result.created?'Sheet laporan Monev resmi telah ditambahkan tanpa mengubah sheet lain.':'Sheet resmi sudah tersedia.');
+    }catch(e){setToast('Gagal menambahkan laporan: '+e.message);}finally{setReportInstalling(false);}
+  };
+
 useEffect(()=>{
     if(!payload||year===null||cellSavingRef.current||savingRef.current||saveBlockedRef.current||pendingCellsRef.current.size===0||periodMissing) return;
     const timer=setTimeout(async()=>{
@@ -904,7 +927,7 @@ useEffect(()=>{
     });
     for(const x of changes){const key=`${name}!${addr(x.r,x.c)}`,version=(cellVersionsRef.current.get(key)||0)+1;cellVersionsRef.current.set(key,version);pendingCellsRef.current.set(key,{key,name,row:x.r,col:x.c,value:x.value,grid:payload.sheets[name]?.grid,version});}editVersionRef.current++;setDirty(true);
   };
-  const reloadWorkbook=async()=>{const resp=await fetchState(year,period);if(!resp.ok||!resp.payload?.sheets)throw new Error(resp.message||'Gagal memuat ulang');setPayload(resp.payload);setYears(prev=>({...prev,[year]:resp.payload}));setBaseline(clone(resp.payload));return resp.payload;};
+  const reloadWorkbook=async()=>{const resp=await fetchState(year,period);setOfficialReportMissing(Boolean(resp.officialMonevMissing)&&!resp.needsImport);if(!resp.ok||!resp.payload?.sheets)throw new Error(resp.message||'Gagal memuat ulang');setPayload(resp.payload);setYears(prev=>({...prev,[year]:resp.payload}));setBaseline(clone(resp.payload));return resp.payload;};
   const structure=async(operation)=>{
     if(dirty||savingRef.current||cellSavingRef.current)throw new Error('Tunggu sampai perubahan tersimpan, lalu ulangi.');
     savingRef.current=true;
@@ -989,7 +1012,7 @@ useEffect(()=>{
       // writes, preventing the previous N×clear + N×write timeout pattern.
       await importSheets(sheetEntries.map(([name,sheet]) => ({...clone(sheet),name})),targetYear,mode,period);
       delete nextPayload._templateBase64;
-      const fresh=await fetchState(targetYear,period);if(!fresh.ok)throw new Error(fresh.message);
+      const fresh=await fetchState(targetYear,period);if(!fresh.ok)throw new Error(fresh.message);setOfficialReportMissing(Boolean(fresh.officialMonevMissing)&&!fresh.needsImport);
       const store={...years,[targetYear]:fresh.payload};
       setYears(store);setYear(targetYear);setPayload(fresh.payload);setDirty(false);
       pendingSheetsRef.current.clear(); pendingCellsRef.current.clear(); cellVersionsRef.current.clear(); remoteRevisionRef.current='';
@@ -1013,7 +1036,7 @@ useEffect(()=>{
     y=Number(y);if(!years[y])return;
     if(dirty||cellSavingRef.current||savingRef.current||pendingCellsRef.current.size||pendingSheetsRef.current.size)return setToast('Selesaikan autosave sebelum berpindah tahun.');
     try{
-      const resp=await fetchState(y,'annual');if(!resp?.ok)throw new Error(resp?.message||'Gagal memuat TA');
+      const resp=await fetchState(y,'annual');if(!resp?.ok)throw new Error(resp?.message||'Gagal memuat TA');setOfficialReportMissing(Boolean(resp.officialMonevMissing)&&!resp.needsImport);
       const ensured=ensureMonevReport(recalculatePayload(resp.payload),y);const next=recalculatePayload(ensured.payload);
       setYear(y);setPeriod('annual');setPeriodMissing(false);setPayload(next);setBaseline(clone(next));setYears(prev=>({...prev,[y]:next}));
       setSelectedRow(null);setQuery('');remoteRevisionRef.current='';
@@ -1026,7 +1049,7 @@ useEffect(()=>{
     if(dirty||cellSavingRef.current||savingRef.current||pendingCellsRef.current.size||pendingSheetsRef.current.size)return setToast('Tunggu status TERSIMPAN sebelum mengganti periode.');
     setPeriodBusy(true);
     try{
-      const resp=await fetchState(year,nextPeriod);if(!resp?.ok)throw new Error(resp?.message||'Periode tidak tersedia');
+      const resp=await fetchState(year,nextPeriod);if(!resp?.ok)throw new Error(resp?.message||'Periode tidak tersedia');setOfficialReportMissing(Boolean(resp.officialMonevMissing)&&!resp.needsImport);
       const current=recalculatePayload(ensureMonevReport(resp.payload,year).payload);
       setPayload(current);setBaseline(clone(current));setPeriod(nextPeriod);setPeriodMissing(Boolean(resp.needsImport&&nextPeriod!=='annual'));
       setDirty(false);setSaveError('');saveBlockedRef.current=false;remoteRevisionRef.current='';setSelectedRow(null);setQuery('');
@@ -1054,7 +1077,7 @@ useEffect(()=>{
   const openRowEditor=(sheet,row)=>setRowModal({sheet,row}); const commitRowEditor=(sheet,row,values)=>{values.forEach((v,c)=>{if(!payload.sheets[sheet].formulas?.[addr(row,c)]&&v!==payload.sheets[sheet].values[row]?.[c])updateCell(sheet,row,c,v);});setRowModal(null)};
   const exportActiveExcel=()=>exportExcelPayload(payload,year); const exportSheetExcel=()=>exportExcelPayload(payload,year,selectedSheet);
   const nav=[['dashboard','✦','Dashboard'],['realisasi','◒','Realisasi'],['kinerja','◫','Kinerja'],['renaksi','◇','Monev Renaksi'],['penugasan','◎','Penugasan'],['kertas','▦','Kertas Kerja'],['editor','✎','Edit & Input']];
-  return <div className="app"><div className="ambient ambient-1"></div><div className="ambient ambient-2"></div><div className="ambient ambient-3"></div><div className="noise"></div><header className="topbar"><button className="menu-toggle" onClick={()=>setSidebarOpen(v=>!v)}>☰</button><div className="brand"><div className="brand-mark">ID</div><div><strong>{ORG}</strong><span>DATABASE REALISASI KINERJA • KERTAS KERJA & MONITORING</span></div></div><div className="top-right"><span className="live"><i></i> BACKEND • SECURE</span><button className={dirty?'save-badge dirty year-btn':'save-badge year-btn'} onClick={()=>setYearModal(true)}>{dirty?'MENYIMPAN…':'TERSIMPAN'}</button><button className="year year-btn" disabled={periodBusy} onClick={()=>setYearModal(true)}>TA {year} ▾</button>
+  return <div className="app"><div className="ambient ambient-1"></div><div className="ambient ambient-2"></div><div className="ambient ambient-3"></div><div className="noise"></div>{officialReportMissing&&year===2026&&period==='annual'&&<div className="official-import-banner" role="status"><span><strong>Excel baru: laporan Monev resmi belum ada di Google Sheets.</strong> Tambahkan satu sheet resmi tanpa mengubah 14 sheet lain atau laporan analitik otomatis.</span><button disabled={reportInstalling||dirty} onClick={installOfficialReport}>{reportInstalling?'Memproses…':'Tambahkan Laporan Resmi'}</button></div>}<header className="topbar"><button className="menu-toggle" onClick={()=>setSidebarOpen(v=>!v)}>☰</button><div className="brand"><div className="brand-mark">ID</div><div><strong>{ORG}</strong><span>DATABASE REALISASI KINERJA • KERTAS KERJA & MONITORING</span></div></div><div className="top-right"><span className="live"><i></i> BACKEND • SECURE</span><button className={dirty?'save-badge dirty year-btn':'save-badge year-btn'} onClick={()=>setYearModal(true)}>{dirty?'MENYIMPAN…':'TERSIMPAN'}</button><button className="year year-btn" disabled={periodBusy} onClick={()=>setYearModal(true)}>TA {year} ▾</button>
     <label className="period-select"><span>Periode</span><select aria-label="Periode laporan" disabled={periodBusy} value={period} onChange={e=>selectPeriod(e.target.value)}>{PERIOD_OPTIONS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}</select></label><a className="soft" href={import.meta.env.VITE_DASHBOARD_URL||"https://sikapinspektoratkabmahakamulu.pages.dev"} target="_blank" rel="noopener noreferrer">Dashboard ↗</a><button className="soft logout-btn" onClick={logout} title="Keluar dari sesi">Keluar</button></div></header><aside className={`sidebar ${sidebarOpen?'open':''}`}><div className="side-heading">KERTAS KERJA & MONITORING</div>{nav.map(([id,ic,label])=><button key={id} className={active===id?'nav active':'nav'} onClick={()=>{setActive(id);setSidebarOpen(false)}}><span>{ic}</span><b>{label}</b></button>)}<div className="side-summary"><small>{sheetNames.length} SHEET TERHUBUNG</small><strong>{ORG}</strong><em>Tahun aktif: {year} • {dirty?'Perubahan belum disimpan':'Siap dipantau'}</em></div></aside><main className="main">{saveError&&<section className="save-error-alert" role="alert"><div><strong>Perubahan belum tersimpan di Google Sheets.</strong><p>{saveError}</p><small>Autosave dihentikan sementara agar server tidak dibanjiri HTTP 503. Jangan menutup tab sebelum masalah diperbaiki. Perubahan lokal masih ada selama tab ini terbuka.</small></div><button className="primary" onClick={retrySave}>Coba simpan lagi</button><a href="/api/admin/diagnostics" target="_blank" rel="noopener noreferrer">Periksa koneksi</a></section>}{periodMissing?<section className="period-empty"><h2>Periode {PERIOD_OPTIONS.find(x=>x.value===period)?.label} belum dibuat</h2><p>Data tiap periode disimpan dalam kelompok sheet Google yang terpisah. Buat snapshot dari tahun anggaran utama sebelum mulai mengisi. Ini bukan agregasi otomatis bulanan.</p><button className="primary" disabled={periodBusy} onClick={initializePeriod}>{periodBusy?'Membuat periode…':'Buat periode dari TA utama'}</button><button className="soft" onClick={()=>selectPeriod('annual')}>Kembali ke data tahunan</button></section>:<>{active==='dashboard'&&<Dashboard derived={derived} year={year} onNav={setActive} onSheet={n=>{setSelectedSheet(n);setActive('kertas')}}/>}{active==='realisasi'&&<Realisasi payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Realisasi Fisik & Keu',row)}/>} {active==='kinerja'&&<Kinerja payload={payload} derived={derived} onEdit={(sheet,row=null)=>row===null?(setSelectedSheet(sheet),setActive('editor')):openRowEditor(sheet,row)}/>} {active==='renaksi'&&<MonevRenaksiPage payload={payload} updateCell={updateCell} year={year} dirty={dirty} onOpenSheet={()=>{setSelectedSheet(MONEV_REPORT_SHEET);setActive('editor')}}/>} {active==='penugasan'&&<Penugasan payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Rekap realisasi PKPT',row)} onAdd={()=>openRowEditor('Rekap realisasi PKPT','new')}/>} {active==='kertas'&&<KertasKerja payload={payload} derived={derived} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} query={query} setQuery={setQuery} selectedRow={selectedRow} setSelectedRow={setSelectedRow} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor(selectedSheet,row)} onAdd={()=>openRowEditor(selectedSheet,'new')} onExportSheet={exportSheetExcel} onImportExcel={()=>xlsxRef.current?.click()}/>} {active==='editor'&&<SpreadsheetEditor onCells={updateCellsBatch} payload={payload} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} onStructure={structure} onRefresh={reloadWorkbook} onTemplate={useTemplate} query={query} setQuery={setQuery} updateCell={updateCell} addRow={addRow} deleteRow={deleteRow} duplicateRow={duplicateRow} save={save} reset={reset} exportJson={exportJson} exportAllYears={exportAllYears} importJson={importJson} rollbackLastImport={rollbackLastImport} onAudit={()=>{setAuditEntries(readAudit());setAuditModal(true)}} onImportExcel={()=>xlsxRef.current?.click()} exportExcel={exportActiveExcel} exportSheetExcel={exportSheetExcel} fileRef={fileRef} dirty={dirty} saveError={saveError}/>}</>}</main>{toast&&<div className="toast">{toast}</div>}{yearModal&&<YearManagerModal years={years} activeYear={year} dirty={dirty} onClose={()=>setYearModal(false)} onSwitch={switchYear} onCreate={createYear} onRename={()=>setYearEditModal(true)} onSave={save} onExportAll={exportAllYears}/>} {yearEditModal&&<YearEditModal currentYear={year} onClose={()=>setYearEditModal(false)} onRename={v=>renameYearData(year,Number(v))}/>} {rowModal&&<RowEditorModal payload={payload} sheetName={rowModal.sheet} rowIndex={rowModal.row} onClose={()=>setRowModal(null)} onSave={commitRowEditor} onAdd={(sheet,values)=>{addRow(sheet,values);setRowModal(null)}}/>} {importModal&&<ImportExcelModal info={importModal} onClose={()=>setImportModal(null)} onApply={commitImported}/>} {auditModal&&<AuditModal entries={auditEntries} onClose={()=>setAuditModal(false)} onExport={exportAudit}/>} <input hidden ref={xlsxRef} type="file" accept=".xlsx,.xls" onChange={onExcelSelected}/></div>;
 }
 function Dashboard({ derived, year, onNav, onSheet }) {

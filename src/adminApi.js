@@ -85,3 +85,4 @@ export const pushAudit = (entry) =>
   }).catch(() => null);
 export const changeStructure = (operation,year,period='annual') => apiJson('/api/admin/structure',{method:'POST',body:JSON.stringify({...operation,year,period})});
 export const fetchTemplate = () => apiJson('/api/admin/template');
+export const addOfficialMonev = () => apiJson('/api/admin/official-monev',{method:'POST',body:JSON.stringify({year:2026,period:'annual'})});
