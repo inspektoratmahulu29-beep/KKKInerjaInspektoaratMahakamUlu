@@ -243,6 +243,10 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
     name,
     title: resolveExistingTitle(year, name, titles, options.period) || periodTitle(year,name,options.period)
   }));
+  // Include both pre-existing year sheets and new sheets in formula remapping.
+  // On a partial-year repair, formulas must point at 2027__IKU rather than
+  // silently resolving the unprefixed 2026 IKU.
+  const titleReferences={...titleMap(meta,year,options.period),...Object.fromEntries(targets.map(x=>[x.name,x.title]))};
   const createdTargets = targets.filter(x => !existingByTitle.has(x.title));
   await ensureSheets(env, createdTargets.map(x=>{
     const sheet=sheets[x.name]||{};
@@ -259,7 +263,7 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
 
   for (const x of targets) {
     const src = sheets[x.name] || {};
-    const matrix = rowsMatrix(src, separator, Object.fromEntries(targets.map(x=>[x.name,x.title])));
+    const matrix = rowsMatrix(src, separator, titleReferences);
     const rows = matrix.length;
     const cols = Math.max(Number(src?.cols) || 0, ...matrix.map(r => r.length), 1);
     const lastCol = columnLetter(cols - 1);
