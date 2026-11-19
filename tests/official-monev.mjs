@@ -7,8 +7,7 @@ import { compatibleSheetNames, officialReportName, summarizeOfficialMonev, OFFIC
 import {calculateMetrics} from '../functions/lib/metrics.js';
 import { createSession } from '../functions/lib/security.js';
 import { onRequestPost } from '../functions/api/admin/official-monev.js';
-import {readFileSync} from 'node:fs';
-import {resolve} from 'node:path';
+import {createHash} from 'node:crypto';
 if(!globalThis.crypto)globalThis.crypto=webcrypto;
 const official=SEED_WORKBOOK.sheets[OFFICIAL_REPORT_2026];
 assert.equal(Object.keys(SEED_WORKBOOK.sheets).length,15);
@@ -29,8 +28,8 @@ const metrics=calculateMetrics(SEED_WORKBOOK.sheets);
 assert.equal(metrics.monevResmi.plannedBudget,2782912288);
 assert.equal(metrics.totalAnggaran,28172392109,'Official report must not be double-counted in general KPI');
 // Ensure latest exact XLSX is embedded as the protected download artifact.
-const source=readFileSync(resolve('../../2026_Kertas_Kerja_Inspektorat_Mahakam_Ulu_SESUAI_PDF_MONEV_RENAKSI.xlsx'));
-assert.deepEqual(Buffer.from(TEMPLATE_2026_XLSX_BASE64,'base64'),source);
+const templateDigest=createHash('sha256').update(Buffer.from(TEMPLATE_2026_XLSX_BASE64,'base64')).digest('hex');
+assert.equal(templateDigest,'848724443687ce8766a57ab06b08da6e4daceb499465bfa71622f97cdceeb84d', 'Bundled Excel template must match the latest user-provided reference byte for byte.');
 // Mock Google Cloud/Sheets: adding the official report must never issue a
 // values update for IKU or any existing worksheet.
 const keys=await webcrypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
