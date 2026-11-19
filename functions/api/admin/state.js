@@ -1,3 +1,4 @@
+import { classifyBackendError } from '../../lib/errors.js';
 import { getCookie, json, verifySession } from '../../lib/security.js';
 import { readWorkbook, writeWorkbook, rewriteFormulaCells, normalizePeriod } from '../../lib/sheets.js';
 import { SEED_WORKBOOK } from '../../lib/seed.js';
@@ -48,9 +49,11 @@ export async function onRequestGet({ request, env }) {
         payload: seed
       }, 200);
     }
-    return json({ ok: true, source: 'seed', year, period, payload: seedPayload(year) });
+    return json({ ok:false, source:'unconfigured', code:'GOOGLE_CONFIG_MISSING', message:'Google Sheets belum dikonfigurasi. Atur GOOGLE_SHEETS_SPREADSHEET_ID dan GOOGLE_SERVICE_ACCOUNT_JSON di Settings → Variables and secrets (Production).', year, period }, 503);
   } catch (e) {
-    return json({ ok: false, source: 'error', message: e.message, payload: seedPayload(year) }, 200);
+    const error=classifyBackendError(e,'Tidak dapat membaca Google Sheets');
+    console.error(JSON.stringify({event:'sheet_read_failed',code:error.code,googleStatus:Number(e?.status||0),at:new Date().toISOString()}));
+    return json({ok:false,source:'error',...error,year,period},error.status);
   }
 }
 
@@ -66,6 +69,6 @@ export async function onRequestPut({ request, env }) {
     await writeWorkbook(env, payload, Number(body?.year || payload?.meta?.year || 2026), normalizePeriod(body?.period));
     return json({ ok: true, savedAt: new Date().toISOString(), source: 'google-sheets' });
   } catch (e) {
-    return json({ ok: false, message: e.message }, 500);
+    const error=classifyBackendError(e,'Gagal menyimpan workbook');return json({ok:false,...error},error.status);
   }
 }

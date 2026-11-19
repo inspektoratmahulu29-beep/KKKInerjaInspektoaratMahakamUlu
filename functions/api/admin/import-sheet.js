@@ -1,3 +1,4 @@
+import { classifyBackendError } from '../../lib/errors.js';
 import { getCookie, json, verifySession } from '../../lib/security.js';
 import { writeSingleSheet, writeSheetsBatch, normalizePeriod } from '../../lib/sheets.js';
 
@@ -28,6 +29,7 @@ export async function onRequestPost({ request, env }) {
       : await writeSheetsBatch(env, incoming, year, { import: true, mode,period });
 
     if (env.DB) {
+      try {
       const now = new Date().toISOString();
       await env.DB.prepare(
         `INSERT INTO revision_state (id, revision, updated_at)
@@ -39,6 +41,9 @@ export async function onRequestPost({ request, env }) {
           `INSERT INTO import_log (id, year, sheet_name, status, created_at)
            VALUES (?, ?, ?, 'SUCCESS', ?)`
         ).bind(crypto.randomUUID(), year, sheetName, now).run();
+      }
+      } catch (auxError) {
+        console.warn(JSON.stringify({event:'optional_d1_import_logging_failed',message:String(auxError?.message||'D1 unavailable').slice(0,180)}));
       }
     }
 
@@ -67,6 +72,8 @@ export async function onRequestPost({ request, env }) {
         }
       } catch {}
     }
-    return json({ ok: false, message: e.message || 'Import sheet gagal' }, e?.status === 401 ? 401 : 503);
+    const error=classifyBackendError(e,'Import sheet gagal');
+    console.error(JSON.stringify({event:'sheet_import_failed',code:error.code,googleStatus:Number(e?.status||0),at:new Date().toISOString()}));
+    return json({ok:false,...error},error.status);
   }
 }
