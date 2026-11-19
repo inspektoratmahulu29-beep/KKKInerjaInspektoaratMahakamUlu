@@ -1,0 +1,31 @@
+{
+  "checks": 699,
+  "status": "PASS",
+  "formulaCells": 340,
+  "kpi": {
+    "totalAnggaran": 28172392109,
+    "realisasiKeuangan": 22873934360,
+    "realisasiFisik": 81.19273035637131,
+    "serapan": 81.19273035637131,
+    "sisaDana": 5298457749,
+    "penugasan": 76,
+    "selesai": 29,
+    "berjalan": 11,
+    "belum": 36,
+    "lainnya": 0,
+    "outputUtama": 35,
+    "outputPenunjang": 18,
+    "capaian": {
+      "strategic": 98.37826797385621,
+      "program": 96.03654970760235,
+      "kegiatanUtama": 95.33333333333333,
+      "kegiatanPenunjang": 96,
+      "subUtama": 95.52477477477477,
+      "subPenunjang": 96,
+      "renaksi": 98.63914736196332,
+      "monevProgram": 97.00522875816995
+    },
+    "physicalSource": "excel-formula-office",
+    "physicalRowsCount": 54
+  }
+}

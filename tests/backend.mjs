@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import {webcrypto} from 'node:crypto';
+import {writeSheetsBatch,readWorkbook,changeStructure} from '../functions/lib/sheets.js';
+const keys=await webcrypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
+const pk=Buffer.from(await webcrypto.subtle.exportKey('pkcs8',keys.privateKey)).toString('base64');
+const env={GOOGLE_SHEETS_SPREADSHEET_ID:'test-only',GOOGLE_SERVICE_ACCOUNT_JSON:JSON.stringify({client_email:'test@example.invalid',private_key:`-----BEGIN PRIVATE KEY-----\n${pk}\n-----END PRIVATE KEY-----`})};
+const meta={properties:{locale:'en_US'},sheets:[{properties:{sheetId:1,title:'2027__IKU',gridProperties:{rowCount:1000,columnCount:26}}},{properties:{sheetId:2,title:'2027__Report',gridProperties:{rowCount:1000,columnCount:26}}}]};
+let calls=[];globalThis.fetch=async(url,init={})=>{const u=String(url);calls.push({url:u,body:init.body&&JSON.parse(init.body)});if(u.includes('oauth2'))return Response.json({access_token:'mock',expires_in:3600});if(u.includes('includeGridData'))return Response.json({sheets:[]});if(u.includes('/values:batchGet'))return Response.json({valueRanges:[{values:[[u.includes('FORMULA')?"='2027__IKU'!A1":42]]}]});return Response.json(u.includes(':batchUpdate')?{}:meta);};
+// OAuth body is URLSearchParams, not JSON.
+const fake=globalThis.fetch;globalThis.fetch=(u,i)=>String(u).includes('oauth2')?Promise.resolve(Response.json({access_token:'mock',expires_in:3600})):fake(u,i);
+await writeSheetsBatch(env,{IKU:{name:'IKU',cols:1,values:[[42]],formulas:{}},Report:{name:'Report',cols:1,values:[[42]],formulas:{A1:"='IKU'!A1"}}},2027);
+const values=calls.find(c=>c.url.includes('/values:batchUpdate')).body.data;
+assert.equal(values[1].values[0][0],"='2027__IKU'!A1");
+assert.ok(calls.some(c=>c.body?.requests?.some(r=>r.addNamedRange?.namedRange.name==='KKVIEW_2027_1')));
+assert.ok(calls.some(c=>c.body?.requests?.some(r=>r.addNamedRange?.namedRange.name==='KKCOL_2027_1_0')));
+meta.namedRanges=[{namedRangeId:'extent',name:'KKVIEW_2027_1',range:{sheetId:1,startRowIndex:0,endRowIndex:4,startColumnIndex:0,endColumnIndex:1}}];
+let wb=await readWorkbook(env,['IKU'],2027);assert.equal(wb.sheets.IKU.formulas.A1,"='IKU'!A1");assert.equal(wb.sheets.IKU.values.length,4);
+await assert.rejects(()=>changeStructure(env,{name:'IKU',index:0,grid:{rowCount:999,columnCount:26}},2027),/berubah/);
+await changeStructure(env,{name:'IKU',index:4,count:1,dimension:'ROWS',action:'insert'},2027);
+assert.equal(calls.at(-1).body.requests.at(-1).updateNamedRange.namedRange.range.endRowIndex,5);
+let mutations=0;globalThis.fetch=async(u)=>{if(String(u).includes(':batchUpdate')){mutations++;throw new Error('network lost after submit');}return Response.json(meta);};
+await assert.rejects(()=>changeStructure(env,{name:'IKU',index:2,dimension:'ROWS',action:'insert'},2027));assert.equal(mutations,1);
+console.log('PASS: mock Google import, year-specific references, column anchors, formula round-trip, blank inserted rows, stale layout rejection, no duplicate insertion retry.');
