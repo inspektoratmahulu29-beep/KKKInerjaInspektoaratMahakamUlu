@@ -23,13 +23,6 @@ export async function onRequestGet({ request, env }) {
   try {
     if (env.GOOGLE_SHEETS_SPREADSHEET_ID && env.GOOGLE_SERVICE_ACCOUNT_JSON) {
       let wb = await readWorkbook(env, canonicalNames, year);
-      // One-time self-healing for parse-style formula errors caused by an Excel/Sheets
-      // locale delimiter mismatch. Only cells that are both formulas and #ERROR/#REF/#NAME?
-      // are touched; ordinary business data is never overwritten.
-      if (Array.isArray(wb.formulaErrors) && wb.formulaErrors.length) {
-        await rewriteFormulaCells(env, wb.formulaErrors.map(x => ({ ...x, year })));
-        wb = await readWorkbook(env, canonicalNames, year);
-      }
       if (Object.keys(wb.sheets).length) {
         return json({
           ok: true,
@@ -37,7 +30,7 @@ export async function onRequestGet({ request, env }) {
           year,
           needsImport: false,
           formulaRepairCount: Array.isArray(wb.formulaErrors) ? wb.formulaErrors.length : 0,
-          payload: { ...wb, meta: { year, sheetCount: Object.keys(wb.sheets).length }, activeYear: year }
+          payload: { ...wb, meta: { formulaAuthority:'google-sheets', year, sheetCount: Object.keys(wb.sheets).length }, activeYear: year }
         });
       }
       const seed = seedPayload(year);
