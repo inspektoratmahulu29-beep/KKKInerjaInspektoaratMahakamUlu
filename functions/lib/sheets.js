@@ -72,7 +72,25 @@ function normalizeName(name) {
     .toLowerCase();
 }
 
-export function resolveExistingTitle(year, canonical, existingTitles) {
+
+/** An isolated Google Sheets snapshot per reporting period; annual legacy titles stay unchanged. */
+export function normalizePeriod(value = 'annual') {
+  const p=String(value||'annual').toLowerCase().trim();
+  if(p==='annual'||/^month-(0[1-9]|1[0-2])$/.test(p)||/^quarter-[1-4]$/.test(p)||/^semester-[1-2]$/.test(p))return p;
+  throw Object.assign(new Error('Periode tidak valid'),{status:400});
+}
+export function periodTitle(year,name,period='annual'){
+  const p=normalizePeriod(period);
+  const code=p==='annual'?'':p.startsWith('month-')?`M${p.slice(-2)}__`:p.startsWith('quarter-')?`Q${p.slice(-1)}__`:`S${p.slice(-1)}__`;
+  return `${Number(year)}__${code}${name}`;
+}
+
+export function resolveExistingTitle(year, canonical, existingTitles, period='annual') {
+  const activePeriod=normalizePeriod(period);
+  if(activePeriod!=='annual') {
+    const exact=periodTitle(year,canonical,activePeriod);
+    return existingTitles.find(t=>normalizeName(t)===normalizeName(exact))||null;
+  }
   const exact = existingTitles.find(t => normalizeName(t) === normalizeName(canonical));
   
   const pref = `${Number(year)}__${canonical}`;
@@ -88,10 +106,11 @@ export function resolveExistingTitle(year, canonical, existingTitles) {
 
 async function ensureSheets(env, targetTitles, currentSheets, accessToken = null) {
   const existing = new Set((currentSheets || []).map(s => s.properties.title));
-  const missing = [...new Set(targetTitles)].filter(t => !existing.has(t));
+  const required=targetTitles.map(t=>typeof t==='string'?{title:t}:t);
+  const missing=required.filter(t=>!existing.has(t.title));
   if (!missing.length) return currentSheets || [];
-  const requests = missing.map(title => ({
-    addSheet: { properties: { title } }
+  const requests = missing.map(({title,gridProperties}) => ({
+    addSheet: { properties: { title, ...(gridProperties?{gridProperties}:{}) } }
   }));
   await request(
     env,
@@ -149,8 +168,8 @@ export function rowsMatrix(sheet, separator = ',', titles = {}) {
   }));
 }
 
-async function clearAndWriteSheet(env, title, sheet, accessToken, meta = null,year=2026) {
-  const matrix = rowsMatrix(sheet, formulaSeparator(meta), titleMap(meta,year));
+async function clearAndWriteSheet(env, title, sheet, accessToken, meta = null,year=2026,period='annual') {
+  const matrix = rowsMatrix(sheet, formulaSeparator(meta), titleMap(meta,year,period));
   const rows = matrix.length;
   const cols = Math.max(Number(sheet?.cols) || 0, ...matrix.map(r => r.length), 1);
   const lastCol = columnLetter(cols - 1);
@@ -224,12 +243,18 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
 
   const targets = entries.map(([name]) => ({
     name,
-    title: resolveExistingTitle(year, name, titles) || `${Number(year)}__${name}`
+    title: resolveExistingTitle(year, name, titles, options.period) || periodTitle(year,name,options.period)
   }));
   const createdTargets = targets.filter(x => !existingByTitle.has(x.title));
-  await ensureSheets(env, createdTargets.map(x => x.title), currentSheets, accessToken);
+  await ensureSheets(env, createdTargets.map(x=>{
+    const sheet=sheets[x.name]||{};
+    return {title:x.title,gridProperties:{
+      rowCount:Math.max(1000,Number(sheet.grid?.rowCount)||0,sheet.values?.length||0),
+      columnCount:Math.max(26,Number(sheet.grid?.columnCount)||0,Number(sheet.cols)||0,...(sheet.values||[]).map(r=>r.length))
+    }};
+  }), currentSheets, accessToken);
 
-  await applyPresentation(env,sheets,year,accessToken);
+  await applyPresentation(env,sheets,year,accessToken,options.period);
   const dataItems = [];
   const resultRows = [];
   const cleanupRanges = [];
@@ -331,7 +356,7 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
   };
 }
 
-export async function readWorkbook(env, canonicalNames, year = 2026) {
+export async function readWorkbook(env, canonicalNames, year = 2026, period = 'annual') {
   const accessToken = await getGoogleAccessToken(env);
   const meta = await getSpreadsheet(env, accessToken);
   const currentSheets = meta.sheets || [];
@@ -339,7 +364,7 @@ export async function readWorkbook(env, canonicalNames, year = 2026) {
   const resolved = canonicalNames
     .map(name => ({
       canonical: name,
-      actual: resolveExistingTitle(year, name, titles)
+      actual: resolveExistingTitle(year, name, titles, period)
     }))
     .filter(x => x.actual);
 
@@ -369,7 +394,11 @@ export async function readWorkbook(env, canonicalNames, year = 2026) {
     accessToken
   );
 
-  const displayRanges=resolved.map((x,i)=>`${q(x.actual)}!A1:${columnLetter(Math.max(1,...(data.valueRanges?.[i]?.values||[]).map(r=>r.length))-1)}${Math.max(1,data.valueRanges?.[i]?.values?.length||1)}`);
+  // Query a bounded formatting window: fetching effectiveFormat for every cell of
+  // every 1000-row sheet caused heavy latency and huge serialized responses.
+  // All values and all formulas are still retrieved separately above.
+  const PREVIEW_FORMAT_ROWS=120;
+  const displayRanges=resolved.map((x,i)=>`${q(x.actual)}!A1:${columnLetter(Math.max(1,...(data.valueRanges?.[i]?.values||[]).map(r=>r.length))-1)}${Math.max(1,Math.min(PREVIEW_FORMAT_ROWS,data.valueRanges?.[i]?.values?.length||1))}`);
   const display=await request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}?includeGridData=true&fields=sheets(properties(title),data(startRow,startColumn,columnMetadata(pixelSize),rowData(values(formattedValue,effectiveFormat(numberFormat)))))&${displayRanges.map(r=>'ranges='+encodeURIComponent(r)).join('&')}`,{},accessToken);
   const sheets = {};
   const formulaErrors = [];
@@ -463,12 +492,12 @@ export async function writeSingleSheet(env, sheet, year = 2026, options = {}) {
   const meta = await getSpreadsheet(env, accessToken);
   const currentSheets = meta.sheets || [];
   const titles = currentSheets.map(s => s.properties.title);
-  const targetTitle = resolveExistingTitle(year, name, titles) || `${Number(year)}__${name}`;
+  const targetTitle = resolveExistingTitle(year, name, titles, options.period) || periodTitle(year,name,options.period);
   const old = currentSheets.find(s => s.properties.title === targetTitle);
 
-  await ensureSheets(env, [targetTitle], currentSheets, accessToken);
-  if(options.import)await applyPresentation(env,{[name]:sheet},year,accessToken);
-  const result = await clearAndWriteSheet(env, targetTitle, sheet, accessToken, meta,year);
+  await ensureSheets(env, [{title:targetTitle,gridProperties:{rowCount:Math.max(1000,sheet.values?.length||0,Number(sheet.grid?.rowCount)||0),columnCount:Math.max(26,sheet.cols||0,Number(sheet.grid?.columnCount)||0)}}], currentSheets, accessToken);
+  if(options.import)await applyPresentation(env,{[name]:sheet},year,accessToken,options.period);
+  const result = await clearAndWriteSheet(env, targetTitle, sheet, accessToken, meta,year,options.period);
 
   // clearAndWriteSheet writes a new snapshot after clearing. Single-sheet saves
   // are used for manual editor persistence, so keep the existing behavior but
@@ -484,7 +513,7 @@ export async function writeSingleSheet(env, sheet, year = 2026, options = {}) {
   };
 }
 
-export async function writeCells(env, changes, year = 2026) {
+export async function writeCells(env, changes, year = 2026, period = 'annual') {
   const clean = (changes || []).map(x => ({
     name: String(x?.name || '').trim(),
     row: Number(x?.row),
@@ -497,16 +526,16 @@ export async function writeCells(env, changes, year = 2026) {
   const titles = (meta.sheets || []).map(s => s.properties.title);
   const separator = formulaSeparator(meta);
   for (const x of clean) {
-    const title=resolveExistingTitle(year,x.name,titles);
+    const title=resolveExistingTitle(year,x.name,titles,period);
     const grid=(meta.sheets||[]).find(s=>s.properties.title===title)?.properties.gridProperties;
     if(!grid) throw new Error('Sheet belum tersedia. Import Excel terlebih dahulu.');
     if(x.grid && (grid.rowCount!==x.grid.rowCount || grid.columnCount!==x.grid.columnCount)) throw Object.assign(new Error('Struktur sheet berubah. Muat ulang sebelum mengedit.'),{status:409});
   }
   const bySheet = new Map();
   for (const x of clean) {
-    const title = resolveExistingTitle(year, x.name, titles) || `${Number(year)}__${x.name}`;
+    const title = resolveExistingTitle(year, x.name, titles,period) || periodTitle(year,x.name,period);
     if (!bySheet.has(title)) bySheet.set(title, []);
-    const value = typeof x.value === 'string' && x.value.startsWith('=') ? normalizeFormulaSeparators(remapFormula(x.value,titleMap(meta,year)), separator) : x.value;
+    const value = typeof x.value === 'string' && x.value.startsWith('=') ? normalizeFormulaSeparators(remapFormula(x.value,titleMap(meta,year,period)), separator) : x.value;
     bySheet.get(title).push({ row: x.row, col: x.col, value });
   }
   const data = [];
@@ -533,7 +562,7 @@ export async function writeCells(env, changes, year = 2026) {
   return { updated: data.length, batches: batches.length };
 }
 
-export async function writeWorkbook(env, payload, year = 2026) {
+export async function writeWorkbook(env, payload, year = 2026, period = 'annual') {
   const data = payload?.sheets || {};
   const names = Object.keys(data);
   if (!names.length) return { updated: 0, created: 0 };
@@ -545,7 +574,7 @@ export async function writeWorkbook(env, payload, year = 2026) {
     results.push(await writeSingleSheet(env, {
       ...(data[name] || {}),
       name
-    }, year));
+    }, year,{period}));
   }
   return {
     updated: results.length,
@@ -573,9 +602,9 @@ export function dimensionRequests(p, operation) {
   }
   return requests;
 }
-export async function changeStructure(env,operation,year){
+export async function changeStructure(env,operation,year,period='annual'){
   const token=await getGoogleAccessToken(env);const meta=await getSpreadsheet(env,token);
-  const title=resolveExistingTitle(year,operation.name,meta.sheets.map(s=>s.properties.title));
+  const title=resolveExistingTitle(year,operation.name,meta.sheets.map(s=>s.properties.title),period);
   const p=meta.sheets.find(s=>s.properties.title===title)?.properties;
   if(!p)throw new Error('Sheet belum tersedia. Import Excel dahulu.');
   if(operation.grid&&(operation.grid.rowCount!==p.gridProperties.rowCount||operation.grid.columnCount!==p.gridProperties.columnCount))throw Object.assign(new Error('Struktur sudah berubah. Muat ulang sheet.'),{status:409});
@@ -606,9 +635,9 @@ export function presentationRequests(sheet,p){
   }
   return requests;
 }
-export async function applyPresentation(env, entries,year,token){
+export async function applyPresentation(env, entries,year,token,period='annual'){
   const meta=await getSpreadsheet(env,token);const requests=[];
-  for(const [name,sheet] of Object.entries(entries)){const title=resolveExistingTitle(year,name,meta.sheets.map(s=>s.properties.title));const p=meta.sheets.find(s=>s.properties.title===title)?.properties;if(p){requests.push(...presentationRequests(sheet,p));
+  for(const [name,sheet] of Object.entries(entries)){const title=resolveExistingTitle(year,name,meta.sheets.map(s=>s.properties.title),period);const p=meta.sheets.find(s=>s.properties.title===title)?.properties;if(p){requests.push(...presentationRequests(sheet,p));
     const viewName=`KKVIEW_${year}_${p.sheetId}`;
     for(const n of meta.namedRanges||[])if(n.name===viewName)requests.push({deleteNamedRange:{namedRangeId:n.namedRangeId}});
     requests.push({addNamedRange:{namedRange:{name:viewName,range:{sheetId:p.sheetId,startRowIndex:0,endRowIndex:Math.max(1,sheet.values.length),startColumnIndex:0,endColumnIndex:Math.max(1,sheet.cols||1)}}}});
@@ -622,4 +651,4 @@ export async function applyPresentation(env, entries,year,token){
 export function remapFormula(formula,titles={}) {
   return String(formula).split(/("(?:[^"]|"")*")/g).map((part,i)=>i%2?part:part.replace(/'((?:[^']|'')+)'!|([A-Za-z_][A-Za-z0-9_]*)!/g,(all,quoted,bare)=>{const name=(quoted||bare).replace(/''/g,"'");return titles[name]?q(titles[name])+'!':all;})).join('');
 }
-function titleMap(meta,year=2026){const names=(meta?.sheets||[]).map(s=>s.properties.title);return Object.fromEntries(names.map(n=>{const canonical=n.replace(/^\d{4}__/, '');return [canonical,resolveExistingTitle(year,canonical,names)||n];}));}
+function titleMap(meta,year=2026,period='annual'){const names=(meta?.sheets||[]).map(s=>s.properties.title);return Object.fromEntries(names.map(n=>{const canonical=n.replace(/^\d{4}__(?:M\d{2}__|Q[1-4]__|S[1-2]__)?/, '');return [canonical,resolveExistingTitle(year,canonical,names,period)||n];}));}
