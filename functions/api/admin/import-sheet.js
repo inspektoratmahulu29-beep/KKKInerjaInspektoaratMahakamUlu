@@ -1,5 +1,5 @@
 import { getCookie, json, verifySession } from '../../lib/security.js';
-import { writeSingleSheet, writeSheetsBatch } from '../../lib/sheets.js';
+import { writeSingleSheet, writeSheetsBatch, normalizePeriod } from '../../lib/sheets.js';
 
 export async function onRequestPost({ request, env }) {
   if (!(await verifySession(env, getCookie(request, '__Host-kk_session')))) {
@@ -11,6 +11,7 @@ export async function onRequestPost({ request, env }) {
     body = await request.json();
     const year = Number(body?.year || env.DEFAULT_YEAR || 2026);
     const mode = body?.mode || 'replace';
+    const period=normalizePeriod(body?.period);
     const incoming = Array.isArray(body?.sheets)
       ? body.sheets.reduce((acc, sheet) => {
           if (sheet?.name) acc[String(sheet.name)] = sheet;
@@ -23,8 +24,8 @@ export async function onRequestPost({ request, env }) {
     // batches clear/write calls and splits large payloads to avoid the timeout
     // pattern that previously caused repeated 503 responses.
     const result = Object.keys(incoming).length === 1
-      ? await writeSingleSheet(env, Object.values(incoming)[0], year, { import: true, mode })
-      : await writeSheetsBatch(env, incoming, year, { import: true, mode });
+      ? await writeSingleSheet(env, Object.values(incoming)[0], year, { import: true, mode,period })
+      : await writeSheetsBatch(env, incoming, year, { import: true, mode,period });
 
     if (env.DB) {
       const now = new Date().toISOString();

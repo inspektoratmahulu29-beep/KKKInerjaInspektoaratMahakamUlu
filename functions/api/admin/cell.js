@@ -1,5 +1,5 @@
 import { getCookie, json, verifySession } from '../../lib/security.js';
-import { writeCells } from '../../lib/sheets.js';
+import { writeCells, normalizePeriod } from '../../lib/sheets.js';
 
 export async function onRequestPost({ request, env }) {
   if (!(await verifySession(env, getCookie(request, '__Host-kk_session')))) {
@@ -11,7 +11,7 @@ export async function onRequestPost({ request, env }) {
     const changes = Array.isArray(body?.changes) ? body.changes : [];
     if (!changes.length) return json({ ok: true, updated: 0 });
     if (changes.length > 1000) return json({ ok: false, message: 'Terlalu banyak perubahan sel dalam satu batch.' }, 400);
-    const result = await writeCells(env, changes, year);
+    const result = await writeCells(env, changes, year, normalizePeriod(body?.period));
     if (env.DB) {
       await env.DB.prepare(
         `INSERT INTO revision_state (id, revision, updated_at)

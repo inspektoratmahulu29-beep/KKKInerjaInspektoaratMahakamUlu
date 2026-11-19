@@ -1,5 +1,5 @@
 import { getCookie, json, verifySession } from '../../lib/security.js';
-import { readWorkbook, writeWorkbook, rewriteFormulaCells } from '../../lib/sheets.js';
+import { readWorkbook, writeWorkbook, rewriteFormulaCells, normalizePeriod } from '../../lib/sheets.js';
 import { SEED_WORKBOOK } from '../../lib/seed.js';
 
 const canonicalNames = ['IKU','Rencana Aksi','Capaian Sasaran Strategis','Capaian Sasaran Program','Capaian Sasaran Kegiatan Utama','Capaian Sasaran Kegiatan(Penun)','Capaian Sasaran SUBKegiatan(U)','Capaian Sasaran SUBKegiatan (P)','Monev Renaksi IKU','Monev Program','Monev output Subkegiatan Utama','Monev Subkegiatan Penunjang','Rekap realisasi PKPT','Realisasi Fisik & Keu','Laporan Monev Renaksi'];
@@ -20,15 +20,17 @@ export async function onRequestGet({ request, env }) {
   if (!(await requireAuth(request, env))) return json({ ok: false, message: 'Unauthorized' }, 401);
   const url = new URL(request.url);
   const year = Number(url.searchParams.get('year') || env.DEFAULT_YEAR || 2026);
+  const period=normalizePeriod(url.searchParams.get('period')||'annual');
   try {
     if (env.GOOGLE_SHEETS_SPREADSHEET_ID && env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-      let wb = await readWorkbook(env, canonicalNames, year);
+      let wb = await readWorkbook(env, canonicalNames, year, period);
       if (Object.keys(wb.sheets).length) {
         return json({
           ok: true,
           source: 'google-sheets',
           year,
           needsImport: false,
+          period,
           formulaRepairCount: Array.isArray(wb.formulaErrors) ? wb.formulaErrors.length : 0,
           payload: { ...wb, meta: { formulaAuthority:'google-sheets', year, sheetCount: Object.keys(wb.sheets).length }, activeYear: year }
         });
@@ -38,14 +40,15 @@ export async function onRequestGet({ request, env }) {
         ok: true,
         source: 'google-sheets-uninitialized',
         needsImport: true,
-        code: 'YEAR_NOT_INITIALIZED',
+        code: period==='annual'?'YEAR_NOT_INITIALIZED':'PERIOD_NOT_INITIALIZED',
+        period,
         message: `TA ${year} belum memiliki kertas kerja di Google Sheets. Gunakan Import Excel untuk membuat/menulis seluruh sheet kertas kerja termasuk Laporan Monev Renaksi.`,
         year,
         availableTitles: wb.availableTitles || [],
         payload: seed
       }, 200);
     }
-    return json({ ok: true, source: 'seed', year, payload: seedPayload(year) });
+    return json({ ok: true, source: 'seed', year, period, payload: seedPayload(year) });
   } catch (e) {
     return json({ ok: false, source: 'error', message: e.message, payload: seedPayload(year) }, 200);
   }
@@ -60,7 +63,7 @@ export async function onRequestPut({ request, env }) {
     if (!(env.GOOGLE_SHEETS_SPREADSHEET_ID && env.GOOGLE_SERVICE_ACCOUNT_JSON)) {
       return json({ ok: false, message: 'Google Sheets belum dikonfigurasi di backend. Simpan lokal tidak diaktifkan pada mode aman ini.' }, 503);
     }
-    await writeWorkbook(env, payload, Number(body?.year || payload?.meta?.year || 2026));
+    await writeWorkbook(env, payload, Number(body?.year || payload?.meta?.year || 2026), normalizePeriod(body?.period));
     return json({ ok: true, savedAt: new Date().toISOString(), source: 'google-sheets' });
   } catch (e) {
     return json({ ok: false, message: e.message }, 500);

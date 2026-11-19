@@ -1,5 +1,5 @@
 import { getCookie, json, verifySession } from '../../lib/security.js';
-import { writeSingleSheet } from '../../lib/sheets.js';
+import { writeSingleSheet,normalizePeriod } from '../../lib/sheets.js';
 
 export async function onRequestPut({ request, env }) {
   if (!(await verifySession(env, getCookie(request, '__Host-kk_session')))) {
@@ -10,7 +10,7 @@ export async function onRequestPut({ request, env }) {
     const year = Number(body?.year || env.DEFAULT_YEAR || 2026);
     const name = String(body?.sheet?.name || '').trim();
     if (!name) return json({ ok: false, message: 'Sheet tidak valid' }, 400);
-    const result = await writeSingleSheet(env, body.sheet, year);
+    const result = await writeSingleSheet(env, body.sheet, year, {period:normalizePeriod(body?.period)});
     if (env.DB) {
       await env.DB.prepare(
         `INSERT INTO revision_state (id, revision, updated_at)
