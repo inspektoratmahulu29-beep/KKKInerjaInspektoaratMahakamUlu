@@ -3,7 +3,7 @@ import {SEED_WORKBOOK as p} from '../functions/lib/seed.js';
 import {calculateMetrics} from '../functions/lib/metrics.js';
 import {dimensionRequests,rowsMatrix,normalizeFormulaSeparators,remapFormula,resolveExistingTitle} from '../functions/lib/sheets.js';
 let checks=0;const ok=(fn)=>{fn();checks++;};
-ok(()=>assert.equal(Object.keys(p.sheets).length,14));
+ok(()=>assert.equal(Object.keys(p.sheets).length,15));
 ok(()=>assert.equal(Object.values(p.sheets).reduce((a,s)=>a+Object.keys(s.formulas).length,0),340));
 for(const sheet of Object.values(p.sheets)){const matrix=rowsMatrix(sheet);for(const [a,f] of Object.entries(sheet.formulas)){const [,col,row]=a.match(/([A-Z]+)(\d+)/);const c=[...col].reduce((n,ch)=>n*26+ch.charCodeAt(0)-64,0)-1;ok(()=>assert.equal(matrix[Number(row)-1][c],f));}}
 const k=calculateMetrics(p.sheets);

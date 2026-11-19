@@ -9,4 +9,4 @@ for(const selectedSheet of Object.keys(payload.sheets)){
  const html=renderToStaticMarkup(React.createElement(SpreadsheetEditor,{payload,selectedSheet,setSelectedSheet(){},updateCell(){},onStructure(){},onRefresh(){},onTemplate(){},onImportExcel(){},exportExcel(){},exportSheetExcel(){},dirty:false}));
  assert.ok(html.includes('formula-bar'));assert.ok(html.includes('sheet-tabs'));assert.ok(html.includes('Sisipkan kolom'));assert.ok(html.includes('rowspan'));
 }
-console.log('PASS: server rendering of spreadsheet grid for all 14 sheets, merged cells, formula bar and toolbar.');
+console.log('PASS: server rendering of spreadsheet grid for all 15 Excel sheets, merged cells, formula bar and toolbar.');
