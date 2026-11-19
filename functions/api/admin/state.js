@@ -2,8 +2,10 @@ import { classifyBackendError } from '../../lib/errors.js';
 import { getCookie, json, verifySession } from '../../lib/security.js';
 import { readWorkbook, writeWorkbook, rewriteFormulaCells, normalizePeriod } from '../../lib/sheets.js';
 import { SEED_WORKBOOK } from '../../lib/seed.js';
+import { officialReportName } from '../../lib/report-schema.js';
 
 const canonicalNames = ['IKU','Rencana Aksi','Capaian Sasaran Strategis','Capaian Sasaran Program','Capaian Sasaran Kegiatan Utama','Capaian Sasaran Kegiatan(Penun)','Capaian Sasaran SUBKegiatan(U)','Capaian Sasaran SUBKegiatan (P)','Monev Renaksi IKU','Monev Program','Monev output Subkegiatan Utama','Monev Subkegiatan Penunjang','Rekap realisasi PKPT','Realisasi Fisik & Keu','Laporan Monev Renaksi'];
+const mandatoryNames=canonicalNames.filter(n=>n!=='Laporan Monev Renaksi');
 
 async function requireAuth(request, env) {
   return verifySession(env, getCookie(request, '__Host-kk_session'));
@@ -14,6 +16,9 @@ function seedPayload(year) {
   if (!p.meta) p.meta = {};
   p.meta.year = Number(year);
   p.activeYear = Number(year);
+  if(Number(year)!==2026 && p.sheets?.Laporan_Monev_Renaksi_2026){
+    const target=officialReportName(year);p.sheets[target]={...p.sheets.Laporan_Monev_Renaksi_2026,name:target};delete p.sheets.Laporan_Monev_Renaksi_2026;
+  }
   return p;
 }
 
@@ -24,13 +29,15 @@ export async function onRequestGet({ request, env }) {
   const period=normalizePeriod(url.searchParams.get('period')||'annual');
   try {
     if (env.GOOGLE_SHEETS_SPREADSHEET_ID && env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-      let wb = await readWorkbook(env, canonicalNames, year, period);
+      let wb = await readWorkbook(env, [...mandatoryNames, officialReportName(year), 'Laporan Monev Renaksi'], year, period);
       if (Object.keys(wb.sheets).length) {
         return json({
           ok: true,
           source: 'google-sheets',
           year,
           needsImport: false,
+          officialMonevMissing: Number(year)===2026 && (wb.missing||[]).includes(officialReportName(year)),
+          missingSheets: wb.missing||[],
           period,
           formulaRepairCount: Array.isArray(wb.formulaErrors) ? wb.formulaErrors.length : 0,
           payload: { ...wb, meta: { formulaAuthority:'google-sheets', year, sheetCount: Object.keys(wb.sheets).length }, activeYear: year }
