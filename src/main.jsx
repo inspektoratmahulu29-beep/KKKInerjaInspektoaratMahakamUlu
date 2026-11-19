@@ -1,8 +1,10 @@
+import { SpreadsheetEditor } from './SpreadsheetEditor.jsx';
+import { calculateMetrics, capaianMeta, capaianMetric } from '../functions/lib/metrics.js';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
 import './styles.css';
-import { adminMe, adminLogin, adminLogout, fetchState, saveState, saveSheet, saveCells, importSheet, importSheets, fetchRevision, pushAudit } from './adminApi.js';
+import { adminMe, adminLogin, adminLogout, fetchState, saveState, saveSheet, saveCells, importSheet, importSheets, fetchRevision, pushAudit, changeStructure, fetchTemplate } from './adminApi.js';
 import { MONEV_REPORT_SHEET, ensureMonevReport, prepareBlankMonevReport, isMonevReportComputedCell, MonevRenaksiPage } from './monevReport.jsx';
 
 const STORAGE_KEY = 'mahulu-dashboard-realisasi-v8';
@@ -437,6 +439,7 @@ function extractWorkbookPresentation(wb){
       cols: (ws['!cols']||[]).map(c=>c?({...c}):null),
       rows: (ws['!rows']||[]).map(r=>r?({...r}):null),
       hidden: !!ws['!hidden'],
+      formats: Object.fromEntries(Object.entries(ws).filter(([a,c])=>a[0]!=='!'&&c.z&&(c.v!==undefined||c.f)).map(([a,c])=>[a,{numberFormat:c.z}])),
       views: ws['!views'] ? clone(ws['!views']) : null,
       autoFilter: ws['!autofilter'] ? clone(ws['!autofilter']) : null,
     };
@@ -512,18 +515,9 @@ function parseExcelWorkbook(file) {
       const ws=wb.Sheets[name]; const values=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
       const formulas={}; const ref=ws['!ref'];
       if(ref){ const range=XLSX.utils.decode_range(ref); for(let r=range.s.r;r<=range.e.r;r++) for(let c=range.s.c;c<=range.e.c;c++){ const a=XLSX.utils.encode_cell({r,c}); if(ws[a]?.f) formulas[a]='='+(ws[a].f||''); } }
-      // In Realisasi Fisik & Keu, column E on detail rows is a user INPUT (realisasi fisik),
-      // never a derived formula. Keep its cached value and drop accidental formulas imported from Excel.
-      if(name==='Realisasi Fisik & Keu'){
-        const st=findRealisasiStructure(values);
-        const summaryRows=new Set([st.officeRow, ...(st.programRows||[]), st.totalRow].filter(Boolean));
-        for(const a of Object.keys(formulas)){
-          const rc=XLSX.utils.decode_cell(a); const excelRow=rc.r+1;
-          if(rc.c===4 && excelRow>0 && !summaryRows.has(excelRow)) delete formulas[a];
-        }
-      }
+      while(values.length>1&&!values[values.length-1].some(v=>v!==''&&v!=null)&&!Object.keys(formulas).some(a=>Number(a.match(/\d+$/)?.[0])===values.length))values.pop();
       const metaSheet=normalizeImportedSheet(name,values,formulas); metaSheet.ref=ref||'A1'; metaSheet.cols=Math.max(metaSheet.cols, XLSX.utils.decode_range(ref||'A1:A1').e.c+1); metaSheet.presentation=extractWorkbookPresentation({SheetNames:[name],Sheets:{[name]:ws}})[name];
-      sheets[name]=metaSheet; year=year||detectYearInValues(values);
+      sheets[name]=metaSheet; for(const row of values.slice(0,8))for(const v of row){const m=String(v).match(/(?:TAHUN ANGGARAN|TA)\s*(20\d{2})/i);if(m)year=Number(m[1]);}
       for(const [a,f] of Object.entries(formulas)) if(isExternalFormula(f)){ const v=ws[a]?.v; if(v!==undefined && !isError(v)) { const rc=XLSX.utils.decode_cell(a); metaSheet.values[rc.r][rc.c]=v; } }
     });
     return {version:'8.1.5',source:file.name,meta:{organization:ORG,year:year||new Date().getFullYear(),sheetCount:wb.SheetNames.length,preserveFormat:true},sheets,_templateBase64:arrayBufferToBase64(buf)};
@@ -535,7 +529,7 @@ function aoaFromSheet(s){ return (s.values||[]).map(r=>Array.from({length:s.cols
 function applyFormulaObjects(ws, s){ for(const [a,f] of Object.entries(s.formulas||{})){ if(!ws[a]) ws[a]={t:'s',v:s.values?.[XLSX.utils.decode_cell(a).r]?.[XLSX.utils.decode_cell(a).c]??''}; ws[a].f=String(f).replace(/^=/,''); } }
 function downloadBlob(blob, filename){ const u=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=u; a.download=filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1000); }
 function exportExcelPayload(payload, year, onlySheet=null){
-  const template=loadTemplateBase64();
+  const template=null; // Export live dimensions and formulas, never stale template coordinates.
   let wb=null;
   if(template?.base64){ try{wb=XLSX.read(template.base64,{type:'base64',cellFormula:true,cellNF:true,cellStyles:true});}catch{wb=null;} }
   if(!wb) wb=XLSX.utils.book_new();
@@ -630,7 +624,7 @@ function dataCompleteness(sheet) {
 }
 
 function sheetStats(name, sheet) {
-  const meta=sheetMeta[name]||{}; const values=sheet?.values||[]; const start=meta.dataStart??3; const rows=values.slice(start); const achievement=[]; const budget=[]; let target=0, realized=0, budgetTotal=0, budgetRealized=0;
+  const values=sheet?.values||[]; const meta={...(sheetMeta[name]||{}),...(name.startsWith("Capaian Sasaran")?capaianMeta(values):{})}; const start=meta.dataStart??3; const rows=values.slice(start).filter(r=>!r.slice(0,2).some(v=>/^(jumlah|total|rata-rata)/i.test(cleanText(v)))); const achievement=[]; const budget=[]; let target=0, realized=0, budgetTotal=0, budgetRealized=0;
   if(meta.target!==undefined){ for(const r of rows){ const t=parseNumber(r?.[meta.target]), a=parseNumber(r?.[meta.real]); if(t!==null) target++; if(t!==null&&a!==null&&t!==0) achievement.push(a/t*100); if(a!==null) realized++; const b=parseNumber(r?.[meta.budget]), br=parseNumber(r?.[meta.budgetReal]); if(b!==null) budgetTotal+=b; if(br!==null) budgetRealized+=br; if(b!==null&&br!==null&&b!==0) budget.push(br/b*100); } }
   if(name==='Realisasi Fisik & Keu'){ const info=getRealisasiTotals(values); budgetTotal=info.budgetTotal; budgetRealized=info.financialTotal; if(info.physicalRate!==null) achievement.push(info.physicalRate); if(info.budgetTotal>0 && info.financialTotal!==null) budget.push(info.financialRate); }
   const monev=[]; if(meta.targetCols&&meta.realCols) rows.forEach(r=>{let t=0,a=0,has=false; meta.targetCols.forEach((c,i)=>{const tv=parseNumber(r?.[c]),av=parseNumber(r?.[meta.realCols[i]]);if(tv!==null&&av!==null&&tv!==0){t+=tv;a+=av;has=true;}});if(has&&t) monev.push(a/t*100);});
@@ -638,12 +632,8 @@ function sheetStats(name, sheet) {
   const average=achievement.length?achievement.reduce((a,b)=>a+b,0)/achievement.length:null; const budgetAverage=budget.length?budget.reduce((a,b)=>a+b,0)/budget.length:(budgetTotal?budgetRealized/budgetTotal*100:null);
   return {completeness:dataCompleteness({...sheet,name}),rows:values.length,cols:sheet?.cols||0,average,budgetAverage,target,realized,budgetTotal,budgetRealized,validMetrics:achievement.length};
 }
-function applyAutoCalculations(payload, name) {
-  const s=payload.sheets?.[name]; if(!s) return;
-  if(name==='Realisasi Fisik & Keu') { recalculateRealisasi(s); return; }
-  if(name===MONEV_REPORT_SHEET) { return; }
-  const meta=sheetMeta[name]; if(meta?.target!==undefined) { recalculateCapaian(s,meta); return; }
-}
+function applyAutoCalculations(payload, name) { /* Google Sheets calculates the original Excel formulas. */ }
+
 function derive(payload){
   const sheets=payload.sheets||{}, stats=Object.entries(sheets).map(([name,s])=>({name,...sheetStats(name,s)}));
   const rf=sheets['Realisasi Fisik & Keu']?.values||[];
@@ -694,11 +684,13 @@ function derive(payload){
   const monevNames=['Monev Renaksi IKU','Monev Program'];
   const monevRates=monevNames.map(name=>{const st=sheetStats(name,sheets[name]);return {name,rate:st.average,budgetRate:st.budgetAverage}});
 
+  const central=calculateMetrics(sheets);
   return {
-    stats,budgetTotal,financialTotal,financialRate,physicalRate,
-    physicalRowsCount,weightedPhysical,pkptCount:pkItems.length,done,progress,pending,pkptOther,pkptCompletion,
-    outputUtama,outputPenunjang,errorCount:formulaInfo.errors,externalFormulaCount:formulaInfo.external,formulaCount:formulaInfo.formulaCount,
+    stats,physicalRowsCount,pkptCompletion,
+    errorCount:formulaInfo.errors,externalFormulaCount:formulaInfo.external,formulaCount:formulaInfo.formulaCount,
     capaianCards,overallCompleteness,avgCapaian,monevRates,formulaIssues:formulaInfo.issues,
+    budgetTotal:central.totalAnggaran,financialTotal:central.realisasiKeuangan,financialRate:central.serapan,physicalRate:central.realisasiFisik,weightedPhysical:central.realisasiFisik,
+    pkptCount:central.penugasan,done:central.selesai,progress:central.berjalan,pending:central.belum,pkptOther:central.lainnya,outputUtama:central.outputUtama,outputPenunjang:central.outputPenunjang,
     calculationAudit:{
       realisasiSource:'Realisasi Fisik & Keu',
       budgetBasis:'Office total C10 / fallback sum of top-level program summary rows only',
@@ -745,7 +737,7 @@ function payloadDiffSummary(before,after){
 }
 function EditorApp(){
   const [payload,setPayload]=useState(null),[baseline,setBaseline]=useState(null),[years,setYears]=useState({}),[year,setYear]=useState(null),[active,setActive]=useState('dashboard'),[selectedSheet,setSelectedSheet]=useState('Realisasi Fisik & Keu'),[query,setQuery]=useState(''),[selectedRow,setSelectedRow]=useState(null),[dirty,setDirty]=useState(false),[toast,setToast]=useState(''),[sidebarOpen,setSidebarOpen]=useState(false),[yearModal,setYearModal]=useState(false),[rowModal,setRowModal]=useState(null),[yearEditModal,setYearEditModal]=useState(false),[importModal,setImportModal]=useState(null),[auditModal,setAuditModal]=useState(false),[auditEntries,setAuditEntries]=useState([]),fileRef=useRef(null),xlsxRef=useRef(null),pendingSheetsRef=useRef(new Map()),pendingCellsRef=useRef(new Map()),cellVersionsRef=useRef(new Map()),savingRef=useRef(false),cellSavingRef=useRef(false),remoteRevisionRef=useRef('');
-  useEffect(()=>{(async()=>{try{await initLocalStores();setAuditEntries(auditCache);const me=await adminMe();if(!me.ok) throw Object.assign(new Error('Sesi admin tidak valid. Silakan login kembali.'),{status:401});const target=Number(localStorage.getItem(`${STORAGE_KEY}:activeYear`))||2026;const resp=await fetchState(target);if(!resp.payload?.sheets) throw Object.assign(new Error(resp.message||'Database backend tidak mengembalikan sheet'),{status:resp.status||500});const selectedYear=Number(resp.year||target);const ensured=ensureMonevReport(recalculatePayload(resp.payload),selectedYear);const base=recalculatePayload(ensured.payload);setBaseline(clone(base));const current=recalculatePayload(clone(ensured.payload));setYears({[selectedYear]:current});setYear(selectedYear);setSelectedSheet(current.sheets?.['Realisasi Fisik & Keu']?'Realisasi Fisik & Keu':Object.keys(current.sheets||{})[0]||'');setPayload(current);if(ensured.changed) { pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1); setDirty(true); } else setDirty(false);setToast(resp.needsImport?'Spreadsheet siap — TA ini belum diinisialisasi, gunakan Import Excel.':resp.source==='google-sheets'?'Terhubung ke database Google Sheets':'Mode seed server');}catch(e){if(e?.status===401) window.dispatchEvent(new CustomEvent('admin-auth-required'));setToast('Memuat database gagal: '+e.message);setPayload(null)}})()},[]);
+  useEffect(()=>{(async()=>{try{await initLocalStores();setAuditEntries(auditCache);const me=await adminMe();if(!me.ok) throw Object.assign(new Error('Sesi admin tidak valid. Silakan login kembali.'),{status:401});const target=Number(localStorage.getItem(`${STORAGE_KEY}:activeYear`))||2026;const resp=await fetchState(target);if(!resp.ok||!resp.payload?.sheets) throw Object.assign(new Error(resp.message||'Database backend tidak mengembalikan sheet'),{status:resp.status||500});const selectedYear=Number(resp.year||target);const ensured=ensureMonevReport(recalculatePayload(resp.payload),selectedYear);const base=recalculatePayload(ensured.payload);setBaseline(clone(base));const current=recalculatePayload(clone(ensured.payload));setYears({[selectedYear]:current});setYear(selectedYear);setSelectedSheet(current.sheets?.['Realisasi Fisik & Keu']?'Realisasi Fisik & Keu':Object.keys(current.sheets||{})[0]||'');setPayload(current);if(ensured.changed) { pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1); setDirty(true); } else setDirty(false);setToast(resp.needsImport?'Spreadsheet siap — TA ini belum diinisialisasi, gunakan Import Excel.':resp.source==='google-sheets'?'Terhubung ke database Google Sheets':'Mode seed server');}catch(e){if(e?.status===401) window.dispatchEvent(new CustomEvent('admin-auth-required'));setToast('Memuat database gagal: '+e.message);setPayload(null)}})()},[]);
 useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),3200);return()=>clearTimeout(t)},[toast]); useEffect(()=>{document.title=`${ORG} — Dashboard Realisasi Kinerja`},[]);
   useEffect(()=>{const h=e=>{const d=e.detail||{};if(d.sheet!==undefined)setRowModal({sheet:d.sheet,row:d.row})};window.addEventListener('open-row-editor',h);return()=>window.removeEventListener('open-row-editor',h)},[]);
 useEffect(()=>{
@@ -753,7 +745,7 @@ useEffect(()=>{
     const timer=setTimeout(async()=>{
       if(cellSavingRef.current) return;
       cellSavingRef.current=true;
-      const batch=[...pendingCellsRef.current.values()];
+      const batch=[...pendingCellsRef.current.values()].slice(0,1000);
       const sent=batch.map(x=>({...x,version:cellVersionsRef.current.get(x.key)||0}));
       try{
         await saveCells(sent.map(({key,version,...x})=>x),year);
@@ -763,12 +755,13 @@ useEffect(()=>{
           }
         }
         if(pendingCellsRef.current.size===0 && pendingSheetsRef.current.size===0){
+          const fresh=await fetchState(year);if(fresh.ok&&pendingCellsRef.current.size===0&&pendingSheetsRef.current.size===0){setPayload(fresh.payload);setYears(prev=>({...prev,[year]:fresh.payload}));}
           setDirty(false);
           setToast('Perubahan tersimpan otomatis ke database pusat');
         }
       }catch(e){
         setToast('Sinkronisasi sel tertunda: '+(e.message||'server belum siap'));
-      }finally{cellSavingRef.current=false;}
+      }finally{cellSavingRef.current=false;if(pendingCellsRef.current.size)setTimeout(()=>setPayload(p=>({...p})),2000);}
     },700);
     return()=>clearTimeout(timer);
   },[payload,year]);
@@ -832,7 +825,7 @@ useEffect(()=>{
     return()=>clearInterval(id);
   },[year,dirty,importModal]);
   const derived=useMemo(()=>payload?derive(payload):null,[payload]); const sheetNames=useMemo(()=>payload?Object.keys(payload.sheets||{}):[],[payload]);
-  if(!payload||year===null)return <div className="loading"><div className="loading-orb"></div><div>Memuat database kertas kerja…</div></div>;
+  if(!payload||year===null)return <div className="loading"><div className="loading-orb"></div><div>{toast||"Memuat database kertas kerja…"}</div>{toast&&<button onClick={()=>window.location.reload()}>Coba lagi</button>}</div>;
   const update=(fn,sheetName=null,fastCell=null)=>{
     setPayload(prev=>{
       const next=clone(prev);
@@ -846,21 +839,33 @@ useEffect(()=>{
       return next;
     });
     if(sheetName && !fastCell){ const prevVersion=pendingSheetsRef.current.get(sheetName)||0; pendingSheetsRef.current.set(sheetName,prevVersion+1); }
-    if(sheetName==='Monev Renaksi IKU' || sheetName===MONEV_REPORT_SHEET){ const prevVersion=pendingSheetsRef.current.get(MONEV_REPORT_SHEET)||0; pendingSheetsRef.current.set(MONEV_REPORT_SHEET,prevVersion+1); }
+    if(false){ const prevVersion=pendingSheetsRef.current.get(MONEV_REPORT_SHEET)||0; pendingSheetsRef.current.set(MONEV_REPORT_SHEET,prevVersion+1); }
     if(fastCell){
       const key=`${sheetName}!${addr(fastCell.r,fastCell.c)}`;
       const version=(cellVersionsRef.current.get(key)||0)+1;
       cellVersionsRef.current.set(key,version);
-      pendingCellsRef.current.set(key,{key,name:sheetName,row:fastCell.r,col:fastCell.c,value:fastCell.v,version});
+      pendingCellsRef.current.set(key,{key,name:sheetName,row:fastCell.r,col:fastCell.c,value:fastCell.v,grid:payload.sheets[sheetName]?.grid,version});
     }
     setDirty(true);
   }; const logout=async()=>{await adminLogout().catch(()=>{});window.location.reload();}; const updateCell=(sheet,r,c,v)=>{
-    const computed = sheetMeta[sheet]?.achieve===c || sheetMeta[sheet]?.budgetPct===c || (sheet==='Realisasi Fisik & Keu'&&[3,4,5,7,8,9].includes(c));
-    if(computed) return;
-    update(p=>{if(p.sheets?.[sheet]?.values?.[r])p.sheets[sheet].values[r][c]=v},sheet,{r,c,v});
+    
+    update(p=>{const s=p.sheets[sheet];while(s.values.length<=r)s.values.push([]);s.values[r][c]=v;s.formulas=s.formulas||{};if(typeof v==='string'&&v.startsWith('='))s.formulas[addr(r,c)]=v;else delete s.formulas[addr(r,c)];if(s.formattedValues?.[r])s.formattedValues[r][c]=undefined;},sheet,{r,c,v});
   };
-  const addRow=(sheet,values,index)=>update(p=>{const s=p.sheets[sheet];if(!s)return;const cols=Math.max(s.cols||0,...s.values.map(r=>r?.length||0),values.length);const row=Array.from({length:cols},(_,i)=>values[i]??'');const at=index==null?s.values.length:Math.max(0,Math.min(index,s.values.length));s.values.splice(at,0,row);s.rows=s.values.length;s.cols=cols},sheet);
-  const deleteRow=(sheet,row)=>update(p=>{const s=p.sheets[sheet];if(s?.values?.length>1){s.values.splice(row,1);s.rows=s.values.length}},sheet); const duplicateRow=(sheet,row)=>update(p=>{const s=p.sheets[sheet];if(s){s.values.splice(row+1,0,clone(s.values[row]||[]));s.rows=s.values.length}},sheet);
+  const updateCellsBatch=(name,changes)=>{
+    setPayload(prev=>{const next=clone(prev),s=next.sheets[name];s.formulas=s.formulas||{};for(const x of changes){while(s.values.length<=x.r)s.values.push([]);s.values[x.r][x.c]=x.value;const a=addr(x.r,x.c);if(typeof x.value==='string'&&x.value.startsWith('='))s.formulas[a]=x.value;else delete s.formulas[a];if(s.formattedValues?.[x.r])s.formattedValues[x.r][x.c]=undefined;}return next;});
+    for(const x of changes){const key=`${name}!${addr(x.r,x.c)}`,version=(cellVersionsRef.current.get(key)||0)+1;cellVersionsRef.current.set(key,version);pendingCellsRef.current.set(key,{key,name,row:x.r,col:x.c,value:x.value,grid:payload.sheets[name]?.grid,version});}setDirty(true);
+  };
+  const reloadWorkbook=async()=>{const resp=await fetchState(year);if(!resp.ok||!resp.payload?.sheets)throw new Error(resp.message||'Gagal memuat ulang');setPayload(resp.payload);setYears(prev=>({...prev,[year]:resp.payload}));setBaseline(clone(resp.payload));return resp.payload;};
+  const structure=async(operation)=>{
+    if(dirty||savingRef.current||cellSavingRef.current)throw new Error('Tunggu sampai perubahan tersimpan, lalu ulangi.');
+    savingRef.current=true;
+    try{await changeStructure({...operation,grid:payload.sheets[operation.name]?.grid},year);const p=await reloadWorkbook();setToast('Struktur diperbarui; referensi rumus mengikuti Google Sheets.');return p;}
+    finally{savingRef.current=false;}
+  };
+  const addRow=async(sheet,values,index)=>{try{const at=index??payload.sheets[sheet].values.length;await structure({name:sheet,dimension:'ROWS',action:'insert',index:at,count:1,copy:'formula'});await saveCells(values.map((v,c)=>({name:sheet,row:at,col:c,value:v})).filter(x=>x.value!==''),year);await reloadWorkbook();}catch(e){setToast(e.message);}};
+  const deleteRow=async(sheet,row)=>{if(!window.confirm('Hapus baris ini? Referensi ke sel yang dihapus dapat menjadi #REF!.'))return;try{await structure({name:sheet,dimension:'ROWS',action:'delete',index:row});}catch(e){setToast(e.message);}};
+  const duplicateRow=async(sheet,row)=>{try{await structure({name:sheet,dimension:'ROWS',action:'duplicate',index:row});}catch(e){setToast(e.message);}};
+  const useTemplate=async()=>{try{const {payload:p}=await fetchTemplate();const mapping=buildSchemaMapping(p,payload);setImportModal({fileName:p.source,payload:p,year:2026,sheets:Object.keys(p.sheets).length,mapping,preview:buildPreviewRows(p,payload),validation:validateImportPlan(p,payload,'replace',mapping,{preserveFormat:true}),preserveFormat:true});}catch(e){setToast(e.message);}};
   const persistYears=async(nextPayload=payload,nextYear=year,nextYears=years)=>{
     const ensured=ensureMonevReport(nextPayload,nextYear);
     const normalized=recalculatePayload(clone(ensured.payload));
@@ -905,8 +910,9 @@ useEffect(()=>{
       // writes, preventing the previous N×clear + N×write timeout pattern.
       await importSheets(sheetEntries.map(([name,sheet]) => ({...clone(sheet),name})),targetYear,mode);
       delete nextPayload._templateBase64;
-      const store={...years,[targetYear]:nextPayload};
-      setYears(store);setYear(targetYear);setPayload(nextPayload);setDirty(false);
+      const fresh=await fetchState(targetYear);if(!fresh.ok)throw new Error(fresh.message);
+      const store={...years,[targetYear]:fresh.payload};
+      setYears(store);setYear(targetYear);setPayload(fresh.payload);setDirty(false);
       pendingSheetsRef.current.clear(); pendingCellsRef.current.clear(); cellVersionsRef.current.clear(); remoteRevisionRef.current='';
       writeAudit(makeAuditEntry('IMPORT_EXCEL',{file:p.source,mode,targetYear,stats:importSchemaStats(mapping),formulaAudit:formulaAudit(p),preserveFormat}));
       setImportModal(null);
@@ -927,10 +933,10 @@ useEffect(()=>{
   const switchYear=y=>{y=Number(y);if(!years[y])return;if(dirty)persistYears(payload,year,years);const ensured=ensureMonevReport(recalculatePayload(clone(years[y])),y);const next=recalculatePayload(ensured.payload);setYear(y);setPayload(next);setYears(prev=>({...prev,[y]:next}));setSelectedRow(null);setQuery('');setDirty(Boolean(ensured.changed));if(ensured.changed)pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1);setToast(`Beralih ke TA ${y}`)};
   const createYear=(targetYear,mode)=>{const y=Number(targetYear);if(!Number.isInteger(y)||y<2000||y>2100||years[y])return setToast('Tahun belum valid atau sudah tersedia');const next=mode==='blank'?blankDataRows(payload,y):normalizePayloadForYear(payload,y);const ensured=ensureMonevReport(next,y);const p=recalculatePayload(ensured.payload);const store={...years,[y]:p};setYears(store);setYear(y);setPayload(p);pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1);setDirty(true);setYearModal(false);setToast(`TA ${y} dibuat`)};
   const renameYearData=(oldYear,newYear)=>{if(years[newYear])return setToast('Tahun tujuan sudah digunakan');const next=normalizePayloadForYear(years[oldYear],newYear);const ensured=ensureMonevReport(next,Number(newYear));const store={...years};delete store[oldYear];store[newYear]=recalculatePayload(ensured.payload);setYears(store);setYear(Number(newYear));setPayload(store[newYear]);pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1);setDirty(true);setYearEditModal(false);setToast(`Tahun diubah menjadi ${newYear}`)};
-  const openRowEditor=(sheet,row)=>setRowModal({sheet,row}); const commitRowEditor=(sheet,row,values)=>{update(p=>{p.sheets[sheet].values[row]=values},sheet);setRowModal(null)};
+  const openRowEditor=(sheet,row)=>setRowModal({sheet,row}); const commitRowEditor=(sheet,row,values)=>{values.forEach((v,c)=>{if(!payload.sheets[sheet].formulas?.[addr(row,c)]&&v!==payload.sheets[sheet].values[row]?.[c])updateCell(sheet,row,c,v);});setRowModal(null)};
   const exportActiveExcel=()=>exportExcelPayload(payload,year); const exportSheetExcel=()=>exportExcelPayload(payload,year,selectedSheet);
   const nav=[['dashboard','✦','Dashboard'],['realisasi','◒','Realisasi'],['kinerja','◫','Kinerja'],['renaksi','◇','Monev Renaksi'],['penugasan','◎','Penugasan'],['kertas','▦','Kertas Kerja'],['editor','✎','Edit & Input']];
-  return <div className="app"><div className="ambient ambient-1"></div><div className="ambient ambient-2"></div><div className="ambient ambient-3"></div><div className="noise"></div><header className="topbar"><button className="menu-toggle" onClick={()=>setSidebarOpen(v=>!v)}>☰</button><div className="brand"><div className="brand-mark">ID</div><div><strong>{ORG}</strong><span>DATABASE REALISASI KINERJA • KERTAS KERJA & MONITORING</span></div></div><div className="top-right"><span className="live"><i></i> BACKEND • SECURE</span><button className={dirty?'save-badge dirty year-btn':'save-badge year-btn'} onClick={()=>setYearModal(true)}>{dirty?'BELUM DISIMPAN':'TERSIMPAN'}</button><button className="year year-btn" onClick={()=>setYearModal(true)}>TA {year} ▾</button><button className="soft logout-btn" onClick={logout} title="Keluar dari sesi">Keluar</button></div></header><aside className={`sidebar ${sidebarOpen?'open':''}`}><div className="side-heading">KERTAS KERJA & MONITORING</div>{nav.map(([id,ic,label])=><button key={id} className={active===id?'nav active':'nav'} onClick={()=>{setActive(id);setSidebarOpen(false)}}><span>{ic}</span><b>{label}</b></button>)}<div className="side-summary"><small>{sheetNames.length} SHEET TERHUBUNG</small><strong>{ORG}</strong><em>Tahun aktif: {year} • {dirty?'Perubahan belum disimpan':'Siap dipantau'}</em></div></aside><main className="main">{active==='dashboard'&&<Dashboard derived={derived} year={year} onNav={setActive} onSheet={n=>{setSelectedSheet(n);setActive('kertas')}}/>}{active==='realisasi'&&<Realisasi payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Realisasi Fisik & Keu',row)}/>} {active==='kinerja'&&<Kinerja payload={payload} derived={derived} onEdit={(sheet,row=null)=>row===null?(setSelectedSheet(sheet),setActive('editor')):openRowEditor(sheet,row)}/>} {active==='renaksi'&&<MonevRenaksiPage payload={payload} updateCell={updateCell} year={year} dirty={dirty} onOpenSheet={()=>{setSelectedSheet(MONEV_REPORT_SHEET);setActive('editor')}}/>} {active==='penugasan'&&<Penugasan payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Rekap realisasi PKPT',row)} onAdd={()=>openRowEditor('Rekap realisasi PKPT','new')}/>} {active==='kertas'&&<KertasKerja payload={payload} derived={derived} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} query={query} setQuery={setQuery} selectedRow={selectedRow} setSelectedRow={setSelectedRow} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor(selectedSheet,row)} onAdd={()=>openRowEditor(selectedSheet,'new')} onExportSheet={exportSheetExcel} onImportExcel={()=>xlsxRef.current?.click()}/>} {active==='editor'&&<Editor payload={payload} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} query={query} setQuery={setQuery} updateCell={updateCell} addRow={addRow} deleteRow={deleteRow} duplicateRow={duplicateRow} save={save} reset={reset} exportJson={exportJson} exportAllYears={exportAllYears} importJson={importJson} rollbackLastImport={rollbackLastImport} onAudit={()=>{setAuditEntries(readAudit());setAuditModal(true)}} onImportExcel={()=>xlsxRef.current?.click()} exportExcel={exportActiveExcel} exportSheetExcel={exportSheetExcel} fileRef={fileRef} dirty={dirty}/>}</main>{toast&&<div className="toast">✓ {toast}</div>}{yearModal&&<YearManagerModal years={years} activeYear={year} dirty={dirty} onClose={()=>setYearModal(false)} onSwitch={switchYear} onCreate={createYear} onRename={()=>setYearEditModal(true)} onSave={save} onExportAll={exportAllYears}/>} {yearEditModal&&<YearEditModal currentYear={year} onClose={()=>setYearEditModal(false)} onRename={v=>renameYearData(year,Number(v))}/>} {rowModal&&<RowEditorModal payload={payload} sheetName={rowModal.sheet} rowIndex={rowModal.row} onClose={()=>setRowModal(null)} onSave={commitRowEditor} onAdd={(sheet,values)=>{addRow(sheet,values);setRowModal(null)}}/>} {importModal&&<ImportExcelModal info={importModal} onClose={()=>setImportModal(null)} onApply={commitImported}/>} {auditModal&&<AuditModal entries={auditEntries} onClose={()=>setAuditModal(false)} onExport={exportAudit}/>} <input hidden ref={xlsxRef} type="file" accept=".xlsx,.xls" onChange={onExcelSelected}/></div>;
+  return <div className="app"><div className="ambient ambient-1"></div><div className="ambient ambient-2"></div><div className="ambient ambient-3"></div><div className="noise"></div><header className="topbar"><button className="menu-toggle" onClick={()=>setSidebarOpen(v=>!v)}>☰</button><div className="brand"><div className="brand-mark">ID</div><div><strong>{ORG}</strong><span>DATABASE REALISASI KINERJA • KERTAS KERJA & MONITORING</span></div></div><div className="top-right"><span className="live"><i></i> BACKEND • SECURE</span><button className={dirty?'save-badge dirty year-btn':'save-badge year-btn'} onClick={()=>setYearModal(true)}>{dirty?'BELUM DISIMPAN':'TERSIMPAN'}</button><button className="year year-btn" onClick={()=>setYearModal(true)}>TA {year} ▾</button><a className="soft" href={import.meta.env.VITE_DASHBOARD_URL||"https://sikapinspektoratkabmahakamulu.pages.dev"} target="_blank" rel="noopener noreferrer">Dashboard ↗</a><button className="soft logout-btn" onClick={logout} title="Keluar dari sesi">Keluar</button></div></header><aside className={`sidebar ${sidebarOpen?'open':''}`}><div className="side-heading">KERTAS KERJA & MONITORING</div>{nav.map(([id,ic,label])=><button key={id} className={active===id?'nav active':'nav'} onClick={()=>{setActive(id);setSidebarOpen(false)}}><span>{ic}</span><b>{label}</b></button>)}<div className="side-summary"><small>{sheetNames.length} SHEET TERHUBUNG</small><strong>{ORG}</strong><em>Tahun aktif: {year} • {dirty?'Perubahan belum disimpan':'Siap dipantau'}</em></div></aside><main className="main">{active==='dashboard'&&<Dashboard derived={derived} year={year} onNav={setActive} onSheet={n=>{setSelectedSheet(n);setActive('kertas')}}/>}{active==='realisasi'&&<Realisasi payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Realisasi Fisik & Keu',row)}/>} {active==='kinerja'&&<Kinerja payload={payload} derived={derived} onEdit={(sheet,row=null)=>row===null?(setSelectedSheet(sheet),setActive('editor')):openRowEditor(sheet,row)}/>} {active==='renaksi'&&<MonevRenaksiPage payload={payload} updateCell={updateCell} year={year} dirty={dirty} onOpenSheet={()=>{setSelectedSheet(MONEV_REPORT_SHEET);setActive('editor')}}/>} {active==='penugasan'&&<Penugasan payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Rekap realisasi PKPT',row)} onAdd={()=>openRowEditor('Rekap realisasi PKPT','new')}/>} {active==='kertas'&&<KertasKerja payload={payload} derived={derived} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} query={query} setQuery={setQuery} selectedRow={selectedRow} setSelectedRow={setSelectedRow} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor(selectedSheet,row)} onAdd={()=>openRowEditor(selectedSheet,'new')} onExportSheet={exportSheetExcel} onImportExcel={()=>xlsxRef.current?.click()}/>} {active==='editor'&&<SpreadsheetEditor onCells={updateCellsBatch} payload={payload} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} onStructure={structure} onRefresh={reloadWorkbook} onTemplate={useTemplate} query={query} setQuery={setQuery} updateCell={updateCell} addRow={addRow} deleteRow={deleteRow} duplicateRow={duplicateRow} save={save} reset={reset} exportJson={exportJson} exportAllYears={exportAllYears} importJson={importJson} rollbackLastImport={rollbackLastImport} onAudit={()=>{setAuditEntries(readAudit());setAuditModal(true)}} onImportExcel={()=>xlsxRef.current?.click()} exportExcel={exportActiveExcel} exportSheetExcel={exportSheetExcel} fileRef={fileRef} dirty={dirty}/>}</main>{toast&&<div className="toast">✓ {toast}</div>}{yearModal&&<YearManagerModal years={years} activeYear={year} dirty={dirty} onClose={()=>setYearModal(false)} onSwitch={switchYear} onCreate={createYear} onRename={()=>setYearEditModal(true)} onSave={save} onExportAll={exportAllYears}/>} {yearEditModal&&<YearEditModal currentYear={year} onClose={()=>setYearEditModal(false)} onRename={v=>renameYearData(year,Number(v))}/>} {rowModal&&<RowEditorModal payload={payload} sheetName={rowModal.sheet} rowIndex={rowModal.row} onClose={()=>setRowModal(null)} onSave={commitRowEditor} onAdd={(sheet,values)=>{addRow(sheet,values);setRowModal(null)}}/>} {importModal&&<ImportExcelModal info={importModal} onClose={()=>setImportModal(null)} onApply={commitImported}/>} {auditModal&&<AuditModal entries={auditEntries} onClose={()=>setAuditModal(false)} onExport={exportAudit}/>} <input hidden ref={xlsxRef} type="file" accept=".xlsx,.xls" onChange={onExcelSelected}/></div>;
 }
 function Dashboard({ derived, year, onNav, onSheet }) {
   const [pulse, setPulse] = useState(0); const [detail, setDetail] = useState(null);
@@ -982,7 +988,7 @@ function MetricCard({ title, value, note }) { return <div className="panel metri
 function Kinerja({ payload, derived, onEdit }) {
   return <section className="page"><PageTitle eyebrow="MONITORING KINERJA" title="Kinerja & Monitoring Evaluasi" desc="Seluruh sumber kinerja ditampilkan per tingkat sasaran. Klik Edit pada baris untuk memperbarui nilai tanpa meninggalkan halaman." /><div className="kinerja-grid">{derived.capaianCards.map(card => <div className="panel" key={card.name}><PanelHead eyebrow={sheetMeta[card.name]?.group || 'CAPAIAN'} title={card.name} right={card.average === null ? 'Belum ada %' : pct(card.average)} /><CapaianMiniTable payload={payload} name={card.name} onEdit={onEdit} /></div>)}<div className="panel"><PanelHead eyebrow="MONEV" title="Monitoring Triwulan" /><MonevSource payload={payload} names={['Monev Renaksi IKU', 'Monev Program', 'Monev output Subkegiatan Utama', 'Monev Subkegiatan Penunjang']} onEdit={onEdit} /></div></div></section>;
 }
-function CapaianMiniTable({ payload, name, onEdit }) { const s = payload.sheets[name]; if (!s) return null; const meta = sheetMeta[name] || {}; const headers = headersFor(s); const cols = Math.min(8, s.cols || 0); const rows = (s.values || []).slice(meta.dataStart || 3).map((r, idx) => ({ r, ri: idx + (meta.dataStart || 3) })).filter(({ r }) => r.some(v => cleanText(v))).slice(0, 8); return <div className="mini-table-wrap"><div className="mini-table"><table><thead><tr><th>#</th>{Array.from({ length: cols }, (_, i) => <th key={i}>{colName(i)}<small>{headers[i]}</small></th>)}<th>Aksi</th></tr></thead><tbody>{rows.map(({ r, ri }) => <tr key={ri}><td>{ri + 1}</td>{Array.from({ length: cols }, (_, ci) => <td className="text-wrap" key={ci}>{isError(r?.[ci]) ? <span className="error-cell">{cell(r?.[ci])}</span> : cell(r?.[ci]) || '—'}</td>)}<td><button className="row-edit" onClick={() => onEdit(name, ri)}>✎</button></td></tr>)}</tbody></table></div>{rows.length < (s.values?.length || 0) - (meta.dataStart || 3) && <div className="mini-foot">Menampilkan {rows.length} contoh baris • gunakan Kertas Kerja untuk melihat semuanya</div>}</div>; }
+function CapaianMiniTable({ payload, name, onEdit }) { const s = payload.sheets[name]; if (!s) return null; const meta = {...(sheetMeta[name] || {}),...capaianMeta(s.values||[])}; const headers = headersFor(s); const cols = Math.min(8, s.cols || 0); const rows = (s.values || []).slice(meta.dataStart || 3).map((r, idx) => ({ r, ri: idx + (meta.dataStart || 3) })).filter(({ r }) => r.some(v => cleanText(v))).slice(0, 8); return <div className="mini-table-wrap"><div className="mini-table"><table><thead><tr><th>#</th>{Array.from({ length: cols }, (_, i) => <th key={i}>{colName(i)}<small>{headers[i]}</small></th>)}<th>Aksi</th></tr></thead><tbody>{rows.map(({ r, ri }) => <tr key={ri}><td>{ri + 1}</td>{Array.from({ length: cols }, (_, ci) => <td className="text-wrap" key={ci}>{isError(r?.[ci]) ? <span className="error-cell">{cell(r?.[ci])}</span> : cell(r?.[ci]) || '—'}</td>)}<td><button className="row-edit" onClick={() => onEdit(name, ri)}>✎</button></td></tr>)}</tbody></table></div>{rows.length < (s.values?.length || 0) - (meta.dataStart || 3) && <div className="mini-foot">Menampilkan {rows.length} contoh baris • gunakan Kertas Kerja untuk melihat semuanya</div>}</div>; }
 function MonevSource({ payload, names, onEdit }) { return <div className="source-grid">{names.map(n => { const s = payload.sheets[n]; return <button className="source-card" key={n} onClick={() => onEdit(n)}><span className="eyebrow">SUMBER</span><b>{n}</b><small>{number(s?.rows || 0)} baris • {number(s?.cols || 0)} kolom</small><em>↗</em></button>; })}</div>; }
 
 function Penugasan({ payload, derived, onEdit, onAdd }) { const sheet = payload.sheets['Rekap realisasi PKPT']; const values = sheet?.values || []; const headers = headersFor(sheet); const rows = values.map((r, ri) => ({ r, ri })).filter(({ r }) => cleanText(r?.[3])); return <section className="page"><PageTitle eyebrow="REKAP REALISASI PKPT" title="Daftar Penugasan" desc="Setiap penugasan bisa diedit langsung di halaman ini. Tambahkan penugasan baru dengan form yang mengikuti seluruh kolom sumber." action="Edit database" onAction={() => onEdit()} /><div className="metric-four"><MetricCard title="Total" value={number(derived.pkptCount)} note="Penugasan teridentifikasi" /><MetricCard title="Selesai" value={number(derived.done)} note="Sudah / selesai" /><MetricCard title="Berjalan" value={number(derived.progress)} note="Sedang proses" /><MetricCard title="Belum" value={number(derived.pending)} note="Belum / kosong" /></div><div className="panel section-gap"><PanelHead eyebrow="KERTAS KERJA PKPT" title="Daftar Penugasan" right={<button className="primary" onClick={onAdd}>＋ Tambah penugasan</button>} /><div className="task-table"><table><thead><tr>{headers.map((h, i) => <th key={i}>{colName(i)}<small>{h}</small></th>)}<th>Aksi</th></tr></thead><tbody>{rows.map(({ r, ri }) => <tr key={ri}>{Array.from({ length: Math.min(headers.length, 14) }, (_, ci) => <td key={ci} className="text-wrap">{ci === 4 ? <StatusPill value={r?.[ci]} /> : cell(r?.[ci]) || '—'}</td>)}<td className="actions-cell"><button className="row-edit" onClick={() => onEdit(ri)}>✎ Edit</button></td></tr>)}</tbody></table></div></div></section>; }
@@ -1027,7 +1033,7 @@ function RowEditorModal({ payload, sheetName, rowIndex, onClose, onSave, onAdd }
   const isNew = rowIndex === 'new';
   const [values, setValues] = useState(() => isNew ? Array(cols).fill('') : clone(sheet.values[Number(rowIndex)] || Array(cols).fill('')));
   const meta = sheetMeta[sheetName] || {};
-  const isComputed = (i) => (meta.achieve === i || meta.budgetPct === i || (sheetName === 'Realisasi Fisik & Keu' && [3,4,5,7,8,9].includes(i)));
+  const isComputed = (i) => !!sheet.formulas?.[addr(Number(rowIndex),i)];
   const inferredType = (i) => /anggaran|realisasi|target|bobot|persen|fisik|keuangan|nilai|jumlah|tahun|triwulan|%|no\.?$/i.test(headers[i] || '') ? 'number' : 'text';
   const saveRow = () => {
     if (isNew) onAdd(sheetName, clone(values));

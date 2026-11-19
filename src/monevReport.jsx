@@ -1,3 +1,4 @@
+import {header} from '../functions/lib/metrics.js';
 import React from 'react';
 
 export const MONEV_REPORT_SHEET = 'Laporan Monev Renaksi';
@@ -35,10 +36,12 @@ function setFormula(sheet,r,c,formula,value=''){
 function sourceRows(payload){
   const s=payload?.sheets?.['Monev Renaksi IKU'];
   const rows=s?.values||[];
+  const qh=header(rows,'TW 1'),unitCol=header(rows,'SATUAN HASIL')?.c??4;
+  const quarters=(rows[qh?.r??6]||[]).map((v,c)=>/^TW\s*[1-4]$/i.test(text(v))?c:-1).filter(c=>c>=0);
   const out=[];
-  for(let ri=8;ri<rows.length;ri++){
+  for(let ri=(qh?.r??6)+2;ri<rows.length;ri++){
     const r=rows[ri]||[];
-    const indicator=text(r[3]);
+    const indicator=text(r[unitCol-1]);
     if(!indicator || /^tujuan dan sasaran/i.test(indicator) || /^indikator kinerja/i.test(indicator)) continue;
     if(!text(r[4]) && r.slice(5,13).every(v=>v===''||v===null||v===undefined)) continue;
     out.push({
@@ -46,9 +49,10 @@ function sourceRows(payload){
       no:out.length+1,
       sasaran:text(r[1]),
       indicator,
-      unit:text(r[4]),
-      targets:[r[5]??'',r[6]??'',r[7]??'',r[8]??''],
-      realizations:[r[9]??'',r[10]??'',r[11]??'',r[12]??'']
+      unit:text(r[unitCol]),
+      targets:quarters.slice(0,4).map(c=>r[c]??''),
+      sourceCols:{sasaran:header(rows,'SASARAN STRATEGIS')?.c??1,indicator:unitCol-1,unit:unitCol,quarters},
+      realizations:quarters.slice(4,8).map(c=>r[c]??'')
     });
   }
   return out;
@@ -114,6 +118,8 @@ function copyKpiSection(sheet,payload,layout,sectionStart){
     const r=start+2+i;
     const vals=[item.no,item.sasaran,item.indicator,item.unit,item.targets[3],item.targets[0],item.realizations[0],'',item.targets[1],item.realizations[1],'',item.targets[2],item.realizations[2],'',item.targets[3],item.realizations[3],''];
     for(let c=0;c<vals.length;c++) setValue(sheet,r,c,vals[c]);
+    const sc=item.sourceCols;const links={1:sc.sasaran,2:sc.indicator,3:sc.unit,4:sc.quarters[3],5:sc.quarters[0],6:sc.quarters[4],8:sc.quarters[1],9:sc.quarters[5],11:sc.quarters[2],12:sc.quarters[6],14:sc.quarters[3],15:sc.quarters[7]};
+    for(const [dest,source] of Object.entries(links))if(source!==undefined)setFormula(sheet,r,Number(dest),`='Monev Renaksi IKU'!${col(source)}${item.sourceRow+1}`,vals[dest]);
     const caps=[[5,6,7],[8,9,10],[11,12,13],[14,15,16]];
     for(const [tc,rc,cc] of caps){
       const value=formulaValue(num(vals[tc]),num(vals[rc]));
@@ -234,6 +240,21 @@ export function createMonevReportSheet(payload,year,existing=null){
 export function ensureMonevReport(payload,year){
   if(!payload?.sheets) return {payload,changed:false};
   const existing=payload.sheets[MONEV_REPORT_SHEET];
+  if(existing){
+    // Upgrade legacy cached KPI values to source links without rebuilding the
+    // report or touching operator-entered monthly data and existing formulas.
+    const h=header(existing.values||[],'Indikator KPI');if(!h)return {payload,changed:false};
+    const out=clone(payload),sheet=out.sheets[MONEV_REPORT_SHEET];let changed=false;
+    const targets={'Sasaran':'sasaran','Indikator KPI':'indicator','Satuan':'unit'};
+    for(const item of sourceRows(payload)){
+      const rr=(sheet.values||[]).findIndex((row,i)=>i>h.r&&text(row[h.c])===item.indicator);if(rr<0)continue;
+      const links={};for(const [label,key] of Object.entries(targets)){const dest=header(sheet.values,label);if(dest)links[dest.c]=item.sourceCols[key];}
+      const annual=header(sheet.values,'Target Tahunan');if(annual)links[annual.c]=item.sourceCols.quarters[3];
+      for(let q=0;q<4;q++){const t=header(sheet.values,`Target TW ${q+1}`),r=header(sheet.values,`Realisasi TW ${q+1}`);if(t)links[t.c]=item.sourceCols.quarters[q];if(r)links[r.c]=item.sourceCols.quarters[q+4];}
+      for(const [dest,source] of Object.entries(links)){const a=`${col(Number(dest))}${rr+1}`;if(source!==undefined&&!sheet.formulas?.[a]){setFormula(sheet,rr,Number(dest),`='Monev Renaksi IKU'!${col(source)}${item.sourceRow+1}`,sheet.values[rr]?.[dest]);changed=true;}}
+    }
+    return {payload:out,changed};
+  }
   const built=createMonevReportSheet(payload,year,existing);
   const out=clone(payload);
   out.sheets[MONEV_REPORT_SHEET]=built.sheet;

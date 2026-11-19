@@ -83,3 +83,5 @@ export const pushAudit = (entry) =>
     method: 'POST',
     body: JSON.stringify({ entry })
   }).catch(() => null);
+export const changeStructure = (operation,year) => apiJson('/api/admin/structure',{method:'POST',body:JSON.stringify({...operation,year})});
+export const fetchTemplate = () => apiJson('/api/admin/template');
