@@ -35,13 +35,13 @@ export const adminLogin = (username, password) =>
 export const adminLogout = () =>
   apiJson('/api/auth/logout', { method: 'POST', body: '{}' });
 
-export const fetchState = (year) =>
-  apiJson(`/api/admin/state?year=${encodeURIComponent(year)}`);
+export const fetchState = (year,period='annual') =>
+  apiJson(`/api/admin/state?year=${encodeURIComponent(year)}&period=${encodeURIComponent(period)}`);
 
-export const saveState = (payload, year) =>
+export const saveState = (payload, year,period='annual') =>
   apiJson('/api/admin/state', {
     method: 'PUT',
-    body: JSON.stringify({ year, payload })
+    body: JSON.stringify({ year, period, payload })
   });
 
 export const saveSheet = (sheet, year, options = {}) =>
@@ -57,22 +57,22 @@ export const saveSheet = (sheet, year, options = {}) =>
     })
   });
 
-export const saveCells = (changes, year) =>
+export const saveCells = (changes, year, period='annual') =>
   apiJson('/api/admin/cell', {
     method: 'POST',
-    body: JSON.stringify({ year, changes })
+    body: JSON.stringify({ year, period, changes })
   });
 
-export const importSheet = (sheet, year, mode = 'replace') =>
+export const importSheet = (sheet, year, mode = 'replace', period='annual') =>
   apiJson('/api/admin/import-sheet', {
     method: 'POST',
-    body: JSON.stringify({ year, mode, sheets: [sheet] })
+    body: JSON.stringify({ year, mode, period, sheets: [sheet] })
   });
 
-export const importSheets = (sheets, year, mode = 'replace') =>
+export const importSheets = (sheets, year, mode = 'replace', period='annual') =>
   apiJson('/api/admin/import-sheet', {
     method: 'POST',
-    body: JSON.stringify({ year, mode, sheets })
+    body: JSON.stringify({ year, mode, period, sheets })
   });
 
 export const fetchRevision = (year) =>
@@ -83,5 +83,5 @@ export const pushAudit = (entry) =>
     method: 'POST',
     body: JSON.stringify({ entry })
   }).catch(() => null);
-export const changeStructure = (operation,year) => apiJson('/api/admin/structure',{method:'POST',body:JSON.stringify({...operation,year})});
+export const changeStructure = (operation,year,period='annual') => apiJson('/api/admin/structure',{method:'POST',body:JSON.stringify({...operation,year,period})});
 export const fetchTemplate = () => apiJson('/api/admin/template');

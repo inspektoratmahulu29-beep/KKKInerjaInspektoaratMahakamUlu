@@ -281,3 +281,10 @@
 .computed-cell{color:#9fdfd0!important;font-weight:800;background:rgba(127,200,182,.035)}
 .annual-row td{font-weight:800;border-top:1px solid rgba(224,207,126,.18);background:rgba(224,207,126,.035);color:#e4ddaf}
 @media(max-width:760px){.monev-head{flex-direction:column}.monev-head-actions{justify-content:flex-start}.monev-card{padding:13px}.monev-table table{min-width:940px}}
+
+/* Period snapshot selector and uninitialized-period safety gate */
+.top-right .period-select{display:flex;align-items:center;gap:8px;color:#bedbd5;font-size:12px;white-space:nowrap}
+.period-select select{max-width:195px;border:1px solid rgba(169,223,206,.3);border-radius:10px;padding:8px 10px;background:#0e282d;color:#e8f5ec}
+.period-empty{margin:24px auto;max-width:780px;border:1px solid rgba(169,223,206,.25);background:rgba(16,42,48,.94);border-radius:20px;padding:32px;color:#dbeee9}
+.period-empty h2{font-size:22px}.period-empty p{color:#9bb5b2;line-height:1.6;margin:10px 0 24px}.period-empty button{margin:0 10px 10px 0}
+@media(max-width:750px){.top-right .period-select span{display:none}.period-select select{max-width:135px;font-size:11px}.top-right{gap:5px}}
