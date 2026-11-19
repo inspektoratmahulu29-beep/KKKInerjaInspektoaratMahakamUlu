@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check:backend": "node scripts/check-backend.mjs",
-    "test": "node tests/regression.mjs && node tests/backend.mjs && node tests/render.mjs"
+    "test": "node tests/regression.mjs && node tests/backend.mjs && node tests/period.mjs && node tests/render.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "4.3.3",
