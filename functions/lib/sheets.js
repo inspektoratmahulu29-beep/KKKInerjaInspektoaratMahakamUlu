@@ -97,10 +97,8 @@ export function resolveExistingTitle(year, canonical, existingTitles, period='an
   const preferred = existingTitles.find(t => normalizeName(t) === normalizeName(pref));
   if (preferred) return preferred;
   if (exact && Number(year) === 2026) return exact;
-  if (normalizeName(canonical) === normalizeName('Laporan Monev Renaksi')) {
-    const aliases = [`Laporan_Monev_Renaksi_${Number(year)}`, `Laporan Monev Renaksi ${Number(year)}`, `Laporan_Monev_Renaksi_${Number(year)}`];
-    return existingTitles.find(t => aliases.some(a => normalizeName(t) === normalizeName(a))) || null;
-  }
+  // The analytical "Laporan Monev Renaksi" is separate from the official
+  // "Laporan_Monev_Renaksi_YYYY" source. Never fuzzy match these reports.
   return null;
 }
 
@@ -494,6 +492,7 @@ export async function writeSingleSheet(env, sheet, year = 2026, options = {}) {
   const titles = currentSheets.map(s => s.properties.title);
   const targetTitle = resolveExistingTitle(year, name, titles, options.period) || periodTitle(year,name,options.period);
   const old = currentSheets.find(s => s.properties.title === targetTitle);
+  if(options.createOnly&&old)throw Object.assign(new Error('Sheet sudah ada, tidak akan ditimpa oleh template.'),{status:409});
 
   await ensureSheets(env, [{title:targetTitle,gridProperties:{rowCount:Math.max(1000,sheet.values?.length||0,Number(sheet.grid?.rowCount)||0),columnCount:Math.max(26,sheet.cols||0,Number(sheet.grid?.columnCount)||0)}}], currentSheets, accessToken);
   if(options.import)await applyPresentation(env,{[name]:sheet},year,accessToken,options.period);
@@ -626,6 +625,11 @@ export function presentationRequests(sheet,p){
   requests.push({unmergeCells:{range:{sheetId}}});
   requests.push({repeatCell:{range:{sheetId,startRowIndex:0,endRowIndex:Math.max(sheet.rows||sheet.values.length,1),startColumnIndex:0,endColumnIndex:sheet.cols||1},cell:{userEnteredFormat:{wrapStrategy:'WRAP',verticalAlignment:'TOP'}},fields:'userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment'}});
   for(const m of presentation.merges||[])requests.push({mergeCells:{range:{sheetId,startRowIndex:m.s.r,endRowIndex:m.e.r+1,startColumnIndex:m.s.c,endColumnIndex:m.e.c+1},mergeType:'MERGE_ALL'}});
+  if(/^Laporan_Monev_Renaksi_20\d{2}$/.test(sheet.name)) {
+    requests.push({repeatCell:{range:{sheetId,startRowIndex:0,endRowIndex:3,startColumnIndex:0,endColumnIndex:Math.min(columnCount,24)},cell:{userEnteredFormat:{textFormat:{bold:true},verticalAlignment:'MIDDLE'}},fields:'userEnteredFormat.textFormat.bold,userEnteredFormat.verticalAlignment'}});
+    requests.push({repeatCell:{range:{sheetId,startRowIndex:4,endRowIndex:8,startColumnIndex:0,endColumnIndex:Math.min(columnCount,24)},cell:{userEnteredFormat:{textFormat:{bold:true},horizontalAlignment:'CENTER',verticalAlignment:'MIDDLE',wrapStrategy:'WRAP'}},fields:'userEnteredFormat.textFormat.bold,userEnteredFormat.horizontalAlignment,userEnteredFormat.verticalAlignment,userEnteredFormat.wrapStrategy'}});
+  }
+  if(/^Laporan_Monev_Renaksi_20\d{2}$/.test(sheet.name)) (presentation.rows||[]).slice(0,rowCount).forEach((r,i)=>{if(r?.hpt && Number(r.hpt)>0){requests.push({updateDimensionProperties:{range:{sheetId,dimension:'ROWS',startIndex:i,endIndex:i+1},properties:{pixelSize:Math.max(20,Math.min(260,Math.round(Number(r.hpt)*4/3)))},fields:'pixelSize'}});}});
   (presentation.cols||[]).slice(0,columnCount).forEach((c,i)=>{const w=c?.wpx||(c?.wch?c.wch*7:0)||c?.pixelSize;if(w)requests.push({updateDimensionProperties:{range:{sheetId,dimension:'COLUMNS',startIndex:i,endIndex:i+1},properties:{pixelSize:Math.max(32,Math.round(w))},fields:'pixelSize'}});});
   for(const [a,f] of Object.entries(presentation.formats||{})){
     const match=a.match(/^([A-Z]+)(\d+)$/);if(!match)continue;let c=0;for(const ch of match[1])c=c*26+ch.charCodeAt(0)-64;const r=Number(match[2])-1;

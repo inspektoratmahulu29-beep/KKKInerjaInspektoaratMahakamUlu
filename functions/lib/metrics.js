@@ -1,3 +1,4 @@
+import {summarizeOfficialMonev,isOfficialReportName} from './report-schema.js';
 // Shared verbatim by the operator app and public dashboard. No cell mutation.
 export const text = v => String(v ?? '').replace(/\s+/g,' ').trim();
 const norm=v=>text(v).toLowerCase();
@@ -17,5 +18,6 @@ const items=pk.slice((sh?.r??3)+3,end<0?pk.length:end).filter(r=>text(r[statusCo
 const counts={selesai:0,berjalan:0,belum:0,lainnya:0};for(const r of items){const s=norm(r[statusCol]);if(s.includes('belum')||!s)counts.belum++;else if(s==='sudah'||s.includes('selesai'))counts.selesai++;else if(/berjalan|proses/.test(s))counts.berjalan++;else counts.lainnya++;}
 const output=n=>{const rr=rows(n),hh=header(rr,'Jumlah Output');return hh?rr.slice(hh.r+3).reduce((a,r)=>a+(number(r[hh.c])||0),0):0;};
 const names=['Capaian Sasaran Strategis','Capaian Sasaran Program','Capaian Sasaran Kegiatan Utama','Capaian Sasaran Kegiatan(Penun)','Capaian Sasaran SUBKegiatan(U)','Capaian Sasaran SUBKegiatan (P)'];
+const officialName=Object.keys(sheets||{}).find(isOfficialReportName);const monevResmi=summarizeOfficialMonev(officialName?sheets[officialName]:null);
 const keys=['strategic','program','kegiatanUtama','kegiatanPenunjang','subUtama','subPenunjang'];const capaian=Object.fromEntries(names.map((n,i)=>[keys[i],capaianMetric(rows(n))]));capaian.renaksi=quarterRate(rows('Monev Renaksi IKU'));capaian.monevProgram=quarterRate(rows('Monev Program'));
-return {totalAnggaran:budget,realisasiKeuangan:financial,realisasiFisik:physical,serapan:budget&&financial!==null?financial/budget*100:null,sisaDana:budget!==null&&financial!==null?budget-financial:null,penugasan:items.length,...counts,outputUtama:output('Monev output Subkegiatan Utama'),outputPenunjang:output('Monev Subkegiatan Penunjang'),capaian,physicalSource:'excel-formula-office',physicalRowsCount:rf.length};}
+return {monevResmi,totalAnggaran:budget,realisasiKeuangan:financial,realisasiFisik:physical,serapan:budget&&financial!==null?financial/budget*100:null,sisaDana:budget!==null&&financial!==null?budget-financial:null,penugasan:items.length,...counts,outputUtama:output('Monev output Subkegiatan Utama'),outputPenunjang:output('Monev Subkegiatan Penunjang'),capaian,physicalSource:'excel-formula-office',physicalRowsCount:rf.length};}
