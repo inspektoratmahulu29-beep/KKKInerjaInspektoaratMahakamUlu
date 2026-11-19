@@ -101,7 +101,7 @@ export async function getGoogleAccessToken(env) {
 export async function getDriveFileModifiedTime(env, fileId = env.GOOGLE_SHEETS_SPREADSHEET_ID) {
   if (!fileId) throw new Error('GOOGLE_SHEETS_SPREADSHEET_ID belum diatur');
   const token = await getGoogleAccessToken(env);
-  const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,modifiedTime,version`;
+  const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,modifiedTime,version,capabilities(canEdit)`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` }
   });
@@ -116,6 +116,7 @@ export async function getDriveFileModifiedTime(env, fileId = env.GOOGLE_SHEETS_S
   return {
     id: data.id,
     modifiedTime: data.modifiedTime || null,
-    version: data.version || null
+    version: data.version || null,
+    canEdit: typeof data.capabilities?.canEdit === 'boolean' ? data.capabilities.canEdit : null
   };
 }
