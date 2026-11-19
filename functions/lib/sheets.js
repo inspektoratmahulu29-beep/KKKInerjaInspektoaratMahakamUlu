@@ -8,10 +8,10 @@ function q(name) {
   return `'${String(name).replace(/'/g, "''")}'`;
 }
 
-async function request(env, path, init = {}, accessToken = null) {
+export async function request(env, path, init = {}, accessToken = null) {
   const token = accessToken || await getGoogleAccessToken(env);
   let lastError = null;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < (init.noRetry ? 1 : 4); attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     let res;
@@ -28,7 +28,7 @@ async function request(env, path, init = {}, accessToken = null) {
     } catch (e) {
       lastError = e?.name === 'AbortError' ? new Error('Google Sheets request timeout') : e;
       lastError.status = 504;
-      if (attempt === 3) break;
+      if (init.noRetry || attempt === 3) break;
       await new Promise(r => setTimeout(r, 400 * (2 ** attempt) + Math.floor(Math.random() * 250)));
       continue;
     } finally {
@@ -44,7 +44,7 @@ async function request(env, path, init = {}, accessToken = null) {
     lastError.status = res.status;
 
     // Transient Google/API gateway errors get a short backoff.
-    if (![429, 500, 502, 503, 504].includes(res.status) || attempt === 3) break;
+    if (init.noRetry || ![429, 500, 502, 503, 504].includes(res.status) || attempt === 3) break;
     const retryAfter = Number(res.headers.get('retry-after') || 0);
     const backoff = retryAfter > 0 ? Math.min(8000, retryAfter * 1000) : Math.min(8000, 400 * (2 ** attempt) + Math.floor(Math.random() * 250));
     await new Promise(r => setTimeout(r, backoff));
@@ -58,7 +58,7 @@ export async function getSpreadsheet(env, accessToken = null) {
   }
   return request(
     env,
-    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}?fields=spreadsheetId,properties(locale),sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))`,
+    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}?fields=spreadsheetId,properties(locale),namedRanges,sheets(properties(sheetId,title,index,gridProperties),merges)`,
     {},
     accessToken
   );
@@ -74,10 +74,11 @@ function normalizeName(name) {
 
 export function resolveExistingTitle(year, canonical, existingTitles) {
   const exact = existingTitles.find(t => normalizeName(t) === normalizeName(canonical));
-  if (exact && Number(year) === 2026) return exact;
+  
   const pref = `${Number(year)}__${canonical}`;
   const preferred = existingTitles.find(t => normalizeName(t) === normalizeName(pref));
   if (preferred) return preferred;
+  if (exact && Number(year) === 2026) return exact;
   if (normalizeName(canonical) === normalizeName('Laporan Monev Renaksi')) {
     const aliases = [`Laporan_Monev_Renaksi_${Number(year)}`, `Laporan Monev Renaksi ${Number(year)}`, `Laporan_Monev_Renaksi_${Number(year)}`];
     return existingTitles.find(t => aliases.some(a => normalizeName(t) === normalizeName(a))) || null;
@@ -116,16 +117,9 @@ function cellAddress(rowIndex, colIndex) {
   return `${columnLetter(colIndex)}${rowIndex + 1}`;
 }
 
-function normalizeFormulaSeparators(formula, separator) {
-  const f = String(formula || '');
-  if (separator !== ';' || !f.includes(',')) return f;
-  let out = '', quoted = false;
-  for (let i = 0; i < f.length; i++) {
-    const ch = f[i];
-    if (ch === '"') { quoted = !quoted; out += ch; continue; }
-    if (ch === ',' && !quoted) out += ';'; else out += ch;
-  }
-  return out;
+export function normalizeFormulaSeparators(formula, separator) {
+  let out='',quoted=false,braces=0;
+  for(let i=0;i<String(formula).length;i++){const ch=formula[i];if(ch==='"'){if(quoted&&formula[i+1]==='"'){out+='""';i++;continue;}quoted=!quoted;}if(!quoted){if(ch==='{')braces++;if(ch==='}')braces--;if(!braces&&(ch===','||ch===';')){out+=separator;continue;}}out+=ch;}return out;
 }
 
 function formulaSeparator(meta) {
@@ -135,7 +129,7 @@ function formulaSeparator(meta) {
   return (/^(id|de|fr|es|it|pt|nl|tr|ru|pl|sv|da|fi|no|cs|uk)([-_]|$)/.test(locale)) ? ';' : ',';
 }
 
-function rowsMatrix(sheet, separator = ',') {
+export function rowsMatrix(sheet, separator = ',', titles = {}) {
   const values = Array.isArray(sheet?.values) ? sheet.values : [];
   const cols = Math.max(
     Number(sheet?.cols) || 0,
@@ -148,15 +142,15 @@ function rowsMatrix(sheet, separator = ',') {
     const f = formulas[addr];
     // Preserve workbook formulas, but adapt only the argument delimiter for the
     // destination spreadsheet locale so formulas do not become #ERROR!/parse errors.
-    if (typeof f === 'string' && f.startsWith('=') && !/\[[^\]]+\]/.test(f)) {
-      return normalizeFormulaSeparators(f, separator);
+    if (typeof f === 'string' && f.startsWith('=')) {
+      return normalizeFormulaSeparators(remapFormula(f,titles), separator);
     }
     return row?.[c] ?? '';
   }));
 }
 
-async function clearAndWriteSheet(env, title, sheet, accessToken, meta = null) {
-  const matrix = rowsMatrix(sheet, formulaSeparator(meta));
+async function clearAndWriteSheet(env, title, sheet, accessToken, meta = null,year=2026) {
+  const matrix = rowsMatrix(sheet, formulaSeparator(meta), titleMap(meta,year));
   const rows = matrix.length;
   const cols = Math.max(Number(sheet?.cols) || 0, ...matrix.map(r => r.length), 1);
   const lastCol = columnLetter(cols - 1);
@@ -235,13 +229,14 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
   const createdTargets = targets.filter(x => !existingByTitle.has(x.title));
   await ensureSheets(env, createdTargets.map(x => x.title), currentSheets, accessToken);
 
+  await applyPresentation(env,sheets,year,accessToken);
   const dataItems = [];
   const resultRows = [];
   const cleanupRanges = [];
 
   for (const x of targets) {
     const src = sheets[x.name] || {};
-    const matrix = rowsMatrix(src, separator);
+    const matrix = rowsMatrix(src, separator, Object.fromEntries(targets.map(x=>[x.name,x.title])));
     const rows = matrix.length;
     const cols = Math.max(Number(src?.cols) || 0, ...matrix.map(r => r.length), 1);
     const lastCol = columnLetter(cols - 1);
@@ -357,7 +352,7 @@ export async function readWorkbook(env, canonicalNames, year = 2026) {
     };
   }
 
-  const ranges = resolved.map(x => `${q(x.actual)}!A:ZZ`);
+  const ranges = resolved.map(x => {const p=currentSheets.find(s=>s.properties.title===x.actual).properties;return `${q(x.actual)}!A:${columnLetter(p.gridProperties.columnCount-1)}`;});
   const qs = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
   const data = await request(
     env,
@@ -374,18 +369,24 @@ export async function readWorkbook(env, canonicalNames, year = 2026) {
     accessToken
   );
 
+  const displayRanges=resolved.map((x,i)=>`${q(x.actual)}!A1:${columnLetter(Math.max(1,...(data.valueRanges?.[i]?.values||[]).map(r=>r.length))-1)}${Math.max(1,data.valueRanges?.[i]?.values?.length||1)}`);
+  const display=await request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}?includeGridData=true&fields=sheets(properties(title),data(startRow,startColumn,columnMetadata(pixelSize),rowData(values(formattedValue,effectiveFormat(numberFormat)))))&${displayRanges.map(r=>'ranges='+encodeURIComponent(r)).join('&')}`,{},accessToken);
   const sheets = {};
   const formulaErrors = [];
   for (let i = 0; i < resolved.length; i++) {
     const item = resolved[i];
     const values = data.valueRanges?.[i]?.values || [];
     const rendered = formulaData.valueRanges?.[i]?.values || [];
+    const sheetId=currentSheets.find(s=>s.properties.title===item.actual)?.properties.sheetId;
+    const view=meta.namedRanges?.find(n=>n.name===`KKVIEW_${year}_${sheetId}`)?.range;
+    const mergeRows=Math.max(0,...(currentSheets.find(s=>s.properties.sheetId===sheetId)?.merges||[]).map(m=>m.endRowIndex));
+    while(values.length<Math.max(view?.endRowIndex||0,mergeRows))values.push([]);
     const formulas = {};
     for (let r = 0; r < rendered.length; r++) {
       for (let c = 0; c < (rendered[r] || []).length; c++) {
         const v = rendered[r]?.[c];
         const a = cellAddress(r, c);
-        if (typeof v === 'string' && v.startsWith('=')) formulas[a] = v;
+        if (typeof v === 'string' && v.startsWith('=')) formulas[a] = normalizeFormulaSeparators(remapFormula(v,Object.fromEntries(resolved.map(x=>[x.actual,x.canonical]))), ',');
         const raw = values[r]?.[c];
         if (formulas[a] && typeof raw === 'string' && ['#ERROR!','#REF!','#NAME?'].includes(raw.trim().toUpperCase())) {
           formulaErrors.push({ canonical: item.canonical, cell: a, formula: v, value: raw });
@@ -397,11 +398,18 @@ export async function readWorkbook(env, canonicalNames, year = 2026) {
       googleTitle: item.actual,
       values,
       rows: values.length,
-      cols: Math.max(0, ...values.map(r => r.length), ...rendered.map(r => r.length)),
-      formulas
+      cols: Math.max(view?.endColumnIndex||0,...(currentSheets.find(s=>s.properties.sheetId===sheetId)?.merges||[]).map(m=>m.endColumnIndex), ...values.map(r => r.length), ...rendered.map(r => r.length)),
+      formulas,
+      schemaColumns: (meta.namedRanges||[]).filter(n=>n.name.startsWith(`KKCOL_${year}_${currentSheets.find(s=>s.properties.title===item.actual)?.properties.sheetId}_`)).map(n=>({original:Number(n.name.split('_').at(-1)),current:n.range.startColumnIndex||0})),
+      grid: currentSheets.find(s=>s.properties.title===item.actual)?.properties.gridProperties,
+      presentation: { merges: (currentSheets.find(s=>s.properties.title===item.actual)?.merges||[]).map(m=>({s:{r:m.startRowIndex||0,c:m.startColumnIndex||0},e:{r:m.endRowIndex-1,c:m.endColumnIndex-1}})) }
     };
   }
 
+  for(const item of resolved){
+    const grid=display.sheets?.find(s=>s.properties.title===item.actual)?.data?.[0];const sheet=sheets[item.canonical];
+    if(grid){sheet.formattedValues=(grid.rowData||[]).map(r=>(r.values||[]).map(c=>c.formattedValue));sheet.presentation.cols=(grid.columnMetadata||[]).map(c=>({wpx:c.pixelSize}));sheet.presentation.formats={};(grid.rowData||[]).forEach((row,r)=>(row.values||[]).forEach((cell,c)=>{if(cell.effectiveFormat?.numberFormat)sheet.presentation.formats[cellAddress(r,c)]={numberFormat:cell.effectiveFormat.numberFormat.pattern};}));}
+  }
   return {
     meta,
     sheets,
@@ -459,7 +467,8 @@ export async function writeSingleSheet(env, sheet, year = 2026, options = {}) {
   const old = currentSheets.find(s => s.properties.title === targetTitle);
 
   await ensureSheets(env, [targetTitle], currentSheets, accessToken);
-  const result = await clearAndWriteSheet(env, targetTitle, sheet, accessToken, meta);
+  if(options.import)await applyPresentation(env,{[name]:sheet},year,accessToken);
+  const result = await clearAndWriteSheet(env, targetTitle, sheet, accessToken, meta,year);
 
   // clearAndWriteSheet writes a new snapshot after clearing. Single-sheet saves
   // are used for manual editor persistence, so keep the existing behavior but
@@ -480,18 +489,24 @@ export async function writeCells(env, changes, year = 2026) {
     name: String(x?.name || '').trim(),
     row: Number(x?.row),
     col: Number(x?.col),
-    value: x?.value ?? ''
+    value: x?.value ?? '', grid: x?.grid
   })).filter(x => x.name && Number.isInteger(x.row) && x.row >= 0 && Number.isInteger(x.col) && x.col >= 0);
   if (!clean.length) return { updated: 0, batches: 0 };
   const accessToken = await getGoogleAccessToken(env);
   const meta = await getSpreadsheet(env, accessToken);
   const titles = (meta.sheets || []).map(s => s.properties.title);
   const separator = formulaSeparator(meta);
+  for (const x of clean) {
+    const title=resolveExistingTitle(year,x.name,titles);
+    const grid=(meta.sheets||[]).find(s=>s.properties.title===title)?.properties.gridProperties;
+    if(!grid) throw new Error('Sheet belum tersedia. Import Excel terlebih dahulu.');
+    if(x.grid && (grid.rowCount!==x.grid.rowCount || grid.columnCount!==x.grid.columnCount)) throw Object.assign(new Error('Struktur sheet berubah. Muat ulang sebelum mengedit.'),{status:409});
+  }
   const bySheet = new Map();
   for (const x of clean) {
     const title = resolveExistingTitle(year, x.name, titles) || `${Number(year)}__${x.name}`;
     if (!bySheet.has(title)) bySheet.set(title, []);
-    const value = typeof x.value === 'string' && x.value.startsWith('=') ? normalizeFormulaSeparators(x.value, separator) : x.value;
+    const value = typeof x.value === 'string' && x.value.startsWith('=') ? normalizeFormulaSeparators(remapFormula(x.value,titleMap(meta,year)), separator) : x.value;
     bySheet.get(title).push({ row: x.row, col: x.col, value });
   }
   const data = [];
@@ -538,3 +553,73 @@ export async function writeWorkbook(env, payload, year = 2026) {
     results
   };
 }
+
+// A structural request is never automatically retried: a lost response may
+// already have applied the insertion. Refresh before deciding to repeat it.
+export function dimensionRequests(p, operation) {
+  const {dimension='ROWS',action='insert',index,count=1,copy='none'}=operation;
+  const size=dimension==='ROWS'?p.gridProperties.rowCount:p.gridProperties.columnCount;
+  if(!['ROWS','COLUMNS'].includes(dimension)||!['insert','delete','duplicate'].includes(action)||!Number.isInteger(index)||index<0||!Number.isInteger(count)||count<1||count>100||index>size||(action!=='insert'&&index+count>size))throw new Error('Posisi atau jumlah baris/kolom tidak valid');
+  if(action==='delete'&&count>=size)throw new Error('Sheet harus menyisakan minimal satu baris/kolom');
+  const start=action==='duplicate'?index+count:index;
+  const range={sheetId:p.sheetId,dimension,startIndex:start,endIndex:start+count};
+  if(action==='delete')return [{deleteDimension:{range}}];
+  const requests=start===size?[{appendDimension:{sheetId:p.sheetId,dimension,length:count}}]:[{insertDimension:{range,inheritFromBefore:start>0}}];
+  if(copy!=='none'||action==='duplicate'){
+    const from=action==='duplicate'?index:(start===0?count:start-1);
+    const grid=(a,b)=>dimension==='ROWS'?{sheetId:p.sheetId,startRowIndex:a,endRowIndex:b,startColumnIndex:0,endColumnIndex:p.gridProperties.columnCount}:{sheetId:p.sheetId,startColumnIndex:a,endColumnIndex:b,startRowIndex:0,endRowIndex:p.gridProperties.rowCount};
+    const source=grid(from,from+(action==='duplicate'?count:1));const destination=grid(start,start+count);
+    for(const pasteType of (action==='duplicate'?['PASTE_NORMAL']:copy==='formula'?['PASTE_FORMAT','PASTE_FORMULA']:['PASTE_FORMAT']))requests.push({copyPaste:{source,destination,pasteType,pasteOrientation:'NORMAL'}});
+  }
+  return requests;
+}
+export async function changeStructure(env,operation,year){
+  const token=await getGoogleAccessToken(env);const meta=await getSpreadsheet(env,token);
+  const title=resolveExistingTitle(year,operation.name,meta.sheets.map(s=>s.properties.title));
+  const p=meta.sheets.find(s=>s.properties.title===title)?.properties;
+  if(!p)throw new Error('Sheet belum tersedia. Import Excel dahulu.');
+  if(operation.grid&&(operation.grid.rowCount!==p.gridProperties.rowCount||operation.grid.columnCount!==p.gridProperties.columnCount))throw Object.assign(new Error('Struktur sudah berubah. Muat ulang sheet.'),{status:409});
+  const requests=dimensionRequests(p,operation);
+  const view=meta.namedRanges?.find(n=>n.name===`KKVIEW_${year}_${p.sheetId}`);
+  if(view){const range={...view.range};const key=operation.dimension==='COLUMNS'?'endColumnIndex':'endRowIndex';const count=operation.count||1;
+    if(operation.action==='delete')range[key]=Math.max(1,range[key]-Math.max(0,Math.min(count,range[key]-operation.index)));
+    else range[key]=Math.max(range[key],operation.index)+count;
+    requests.push({updateNamedRange:{namedRange:{namedRangeId:view.namedRangeId,range},fields:'range'}});
+  }
+  return request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}:batchUpdate`,{method:'POST',noRetry:true,body:JSON.stringify({requests})},token);
+}
+
+export function presentationRequests(sheet,p){
+  const sheetId=p.sheetId;const requests=[];
+  const rowCount=Math.max(p.gridProperties.rowCount,sheet.rows||sheet.values.length,1),columnCount=Math.max(p.gridProperties.columnCount,sheet.cols||1);
+  requests.push({updateSheetProperties:{properties:{sheetId,gridProperties:{rowCount,columnCount}},fields:'gridProperties.rowCount,gridProperties.columnCount'}});
+  const presentation=sheet.presentation;if(!presentation)return requests;
+  requests.push({unmergeCells:{range:{sheetId}}});
+  requests.push({repeatCell:{range:{sheetId,startRowIndex:0,endRowIndex:Math.max(sheet.rows||sheet.values.length,1),startColumnIndex:0,endColumnIndex:sheet.cols||1},cell:{userEnteredFormat:{wrapStrategy:'WRAP',verticalAlignment:'TOP'}},fields:'userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment'}});
+  for(const m of presentation.merges||[])requests.push({mergeCells:{range:{sheetId,startRowIndex:m.s.r,endRowIndex:m.e.r+1,startColumnIndex:m.s.c,endColumnIndex:m.e.c+1},mergeType:'MERGE_ALL'}});
+  (presentation.cols||[]).slice(0,columnCount).forEach((c,i)=>{const w=c?.wpx||(c?.wch?c.wch*7:0)||c?.pixelSize;if(w)requests.push({updateDimensionProperties:{range:{sheetId,dimension:'COLUMNS',startIndex:i,endIndex:i+1},properties:{pixelSize:Math.max(32,Math.round(w))},fields:'pixelSize'}});});
+  for(const [a,f] of Object.entries(presentation.formats||{})){
+    const match=a.match(/^([A-Z]+)(\d+)$/);if(!match)continue;let c=0;for(const ch of match[1])c=c*26+ch.charCodeAt(0)-64;const r=Number(match[2])-1;
+    const pattern=f.numberFormat;if(!pattern||pattern==='General'||r>=rowCount||c>columnCount)continue;
+    const type=pattern.includes('%')?'PERCENT':/[ymdh]/i.test(pattern.replace(/"[^"]*"/g,''))?'DATE_TIME':pattern==='@'?'TEXT':'NUMBER';
+    requests.push({repeatCell:{range:{sheetId,startRowIndex:r,endRowIndex:r+1,startColumnIndex:c-1,endColumnIndex:c},cell:{userEnteredFormat:{numberFormat:{type,pattern}}},fields:'userEnteredFormat.numberFormat'}});
+  }
+  return requests;
+}
+export async function applyPresentation(env, entries,year,token){
+  const meta=await getSpreadsheet(env,token);const requests=[];
+  for(const [name,sheet] of Object.entries(entries)){const title=resolveExistingTitle(year,name,meta.sheets.map(s=>s.properties.title));const p=meta.sheets.find(s=>s.properties.title===title)?.properties;if(p){requests.push(...presentationRequests(sheet,p));
+    const viewName=`KKVIEW_${year}_${p.sheetId}`;
+    for(const n of meta.namedRanges||[])if(n.name===viewName)requests.push({deleteNamedRange:{namedRangeId:n.namedRangeId}});
+    requests.push({addNamedRange:{namedRange:{name:viewName,range:{sheetId:p.sheetId,startRowIndex:0,endRowIndex:Math.max(1,sheet.values.length),startColumnIndex:0,endColumnIndex:Math.max(1,sheet.cols||1)}}}});
+    const prefix=`KKCOL_${year}_${p.sheetId}_`;
+    for(const n of meta.namedRanges||[])if(n.name.startsWith(prefix))requests.push({deleteNamedRange:{namedRangeId:n.namedRangeId}});
+    for(let c=0;c<(sheet.cols||1);c++)requests.push({addNamedRange:{namedRange:{name:prefix+c,range:{sheetId:p.sheetId,startRowIndex:0,endRowIndex:1,startColumnIndex:c,endColumnIndex:c+1}}}});
+  }}
+  for(let i=0;i<requests.length;i+=400)await request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}:batchUpdate`,{method:'POST',body:JSON.stringify({requests:requests.slice(i,i+400)})},token);
+}
+
+export function remapFormula(formula,titles={}) {
+  return String(formula).split(/("(?:[^"]|"")*")/g).map((part,i)=>i%2?part:part.replace(/'((?:[^']|'')+)'!|([A-Za-z_][A-Za-z0-9_]*)!/g,(all,quoted,bare)=>{const name=(quoted||bare).replace(/''/g,"'");return titles[name]?q(titles[name])+'!':all;})).join('');
+}
+function titleMap(meta,year=2026){const names=(meta?.sheets||[]).map(s=>s.properties.title);return Object.fromEntries(names.map(n=>{const canonical=n.replace(/^\d{4}__/, '');return [canonical,resolveExistingTitle(year,canonical,names)||n];}));}
