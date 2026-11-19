@@ -745,14 +745,32 @@ function payloadDiffSummary(before,after){
   return {sheetsChanged,cellsChanged,rowsAdded,rowsRemoved};
 }
 function EditorApp(){
-  const [payload,setPayload]=useState(null),[baseline,setBaseline]=useState(null),[years,setYears]=useState({}),[year,setYear]=useState(null),[active,setActive]=useState('dashboard'),[selectedSheet,setSelectedSheet]=useState('Realisasi Fisik & Keu'),[query,setQuery]=useState(''),[selectedRow,setSelectedRow]=useState(null),[dirty,setDirty]=useState(false),[period,setPeriod]=useState(INITIAL_PERIOD),[periodMissing,setPeriodMissing]=useState(false),[periodBusy,setPeriodBusy]=useState(false),[toast,setToast]=useState(''),[sidebarOpen,setSidebarOpen]=useState(false),[yearModal,setYearModal]=useState(false),[rowModal,setRowModal]=useState(null),[yearEditModal,setYearEditModal]=useState(false),[importModal,setImportModal]=useState(null),[auditModal,setAuditModal]=useState(false),[auditEntries,setAuditEntries]=useState([]),fileRef=useRef(null),xlsxRef=useRef(null),pendingSheetsRef=useRef(new Map()),pendingCellsRef=useRef(new Map()),cellVersionsRef=useRef(new Map()),savingRef=useRef(false),cellSavingRef=useRef(false),remoteRevisionRef=useRef(''),editVersionRef=useRef(0);
+  const [payload,setPayload]=useState(null),[baseline,setBaseline]=useState(null),[years,setYears]=useState({}),[year,setYear]=useState(null),[active,setActive]=useState('dashboard'),[selectedSheet,setSelectedSheet]=useState('Realisasi Fisik & Keu'),[query,setQuery]=useState(''),[selectedRow,setSelectedRow]=useState(null),[dirty,setDirty]=useState(false),[saveError,setSaveError]=useState(''),[period,setPeriod]=useState(INITIAL_PERIOD),[periodMissing,setPeriodMissing]=useState(false),[periodBusy,setPeriodBusy]=useState(false),[toast,setToast]=useState(''),[sidebarOpen,setSidebarOpen]=useState(false),[yearModal,setYearModal]=useState(false),[rowModal,setRowModal]=useState(null),[yearEditModal,setYearEditModal]=useState(false),[importModal,setImportModal]=useState(null),[auditModal,setAuditModal]=useState(false),[auditEntries,setAuditEntries]=useState([]),fileRef=useRef(null),xlsxRef=useRef(null),pendingSheetsRef=useRef(new Map()),pendingCellsRef=useRef(new Map()),cellVersionsRef=useRef(new Map()),savingRef=useRef(false),cellSavingRef=useRef(false),remoteRevisionRef=useRef(''),editVersionRef=useRef(0),saveBlockedRef=useRef(false),formulaTimerRef=useRef(null),activeScopeRef=useRef({year:null,period:INITIAL_PERIOD});
   useEffect(()=>{(async()=>{try{await initLocalStores();setAuditEntries(auditCache);const me=await adminMe();if(!me.ok) throw Object.assign(new Error('Sesi admin tidak valid. Silakan login kembali.'),{status:401});const urlYear=Number(new URLSearchParams(window.location.search).get('year'));const target=(Number.isInteger(urlYear)&&urlYear>=2000&&urlYear<=2100?urlYear:0)||Number(localStorage.getItem(`${STORAGE_KEY}:activeYear`))||2026;const resp=await fetchState(target,INITIAL_PERIOD);if(!resp.ok||!resp.payload?.sheets) throw Object.assign(new Error(resp.message||'Database backend tidak mengembalikan sheet'),{status:resp.status||500});const selectedYear=Number(resp.year||target);const ensured=ensureMonevReport(recalculatePayload(resp.payload),selectedYear);const base=recalculatePayload(ensured.payload);setBaseline(clone(base));const current=recalculatePayload(clone(ensured.payload));setYears({[selectedYear]:current});setYear(selectedYear);setSelectedSheet(current.sheets?.['Realisasi Fisik & Keu']?'Realisasi Fisik & Keu':Object.keys(current.sheets||{})[0]||'');setPayload(current);setPeriodMissing(Boolean(resp.needsImport&&INITIAL_PERIOD!=='annual'));if(ensured.changed) { pendingSheetsRef.current.set(MONEV_REPORT_SHEET,1); setDirty(true); } else setDirty(false);setToast(resp.needsImport?'Spreadsheet siap — TA ini belum diinisialisasi, gunakan Import Excel.':resp.source==='google-sheets'?'Terhubung ke database Google Sheets':'Mode seed server');}catch(e){if(e?.status===401) window.dispatchEvent(new CustomEvent('admin-auth-required'));setToast('Memuat database gagal: '+e.message);setPayload(null)}})()},[]);
-useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),3200);return()=>clearTimeout(t)},[toast]); useEffect(()=>{document.title=`${ORG} — Dashboard Realisasi Kinerja`},[]);
+useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),3200);return()=>clearTimeout(t)},[toast]);
+  useEffect(()=>()=>{if(formulaTimerRef.current)clearTimeout(formulaTimerRef.current);},[]);
+  useEffect(()=>{activeScopeRef.current={year,period};if(formulaTimerRef.current){clearTimeout(formulaTimerRef.current);formulaTimerRef.current=null;}},[year,period]);
+
+  useEffect(()=>{const warn=e=>{if(dirty){e.preventDefault();e.returnValue='';}};window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[dirty]); useEffect(()=>{document.title=`${ORG} — Dashboard Realisasi Kinerja`},[]);
   useEffect(()=>{const h=e=>{const d=e.detail||{};if(d.sheet!==undefined)setRowModal({sheet:d.sheet,row:d.row})};window.addEventListener('open-row-editor',h);return()=>window.removeEventListener('open-row-editor',h)},[]);
+  // Refresh computed Google formula outputs once editing has gone idle.
+  // The previous implementation fetched all 15 sheets after EVERY cell write,
+  // amplifying latency and requests during ordinary typing.
+  const queueFormulaRefresh=(version,savedYear,savedPeriod)=>{
+    if(formulaTimerRef.current)clearTimeout(formulaTimerRef.current);
+    formulaTimerRef.current=setTimeout(async()=>{
+      if(saveBlockedRef.current||pendingCellsRef.current.size||pendingSheetsRef.current.size||editVersionRef.current!==version||activeScopeRef.current.year!==savedYear||activeScopeRef.current.period!==savedPeriod)return;
+      const fresh=await fetchState(savedYear,savedPeriod).catch(()=>null);
+      if(fresh?.ok&&!fresh.needsImport&&!saveBlockedRef.current&&editVersionRef.current===version&&!pendingCellsRef.current.size&&!pendingSheetsRef.current.size&&activeScopeRef.current.year===savedYear&&activeScopeRef.current.period===savedPeriod){
+        setPayload(fresh.payload);setYears(prev=>({...prev,[savedYear]:fresh.payload}));
+      }
+    },3500);
+  };
+  const retrySave=()=>{saveBlockedRef.current=false;setSaveError('');setPayload(p=>p?({...p}):p);};
 useEffect(()=>{
-    if(!payload||year===null||cellSavingRef.current||savingRef.current||pendingCellsRef.current.size===0||periodMissing) return;
+    if(!payload||year===null||cellSavingRef.current||savingRef.current||saveBlockedRef.current||pendingCellsRef.current.size===0||periodMissing) return;
     const timer=setTimeout(async()=>{
-      if(cellSavingRef.current||savingRef.current) return;
+      if(cellSavingRef.current||savingRef.current||saveBlockedRef.current) return;
       cellSavingRef.current=true;
       const atVersion=editVersionRef.current;
       const batch=[...pendingCellsRef.current.values()].slice(0,1000);
@@ -767,26 +785,25 @@ useEffect(()=>{
         if(pendingCellsRef.current.size===0 && pendingSheetsRef.current.size===0 && editVersionRef.current===atVersion){
           setDirty(false);
           setToast('Perubahan tersimpan otomatis ke database pusat');
-          // Fetch verified formula results only after no new edits have arrived.
-          const fresh=await fetchState(year,period).catch(()=>null);
-          if(fresh?.ok&&!fresh.needsImport&&editVersionRef.current===atVersion&&pendingCellsRef.current.size===0&&pendingSheetsRef.current.size===0){
-            setPayload(fresh.payload);setYears(prev=>({...prev,[year]:fresh.payload}));
-          }
+          queueFormulaRefresh(atVersion,year,period);
         }
       }catch(e){
-        setToast('Sinkronisasi sel tertunda: '+(e.message||'server belum siap'));
+        // Stop automatic retries after a backend error: the old 900-ms loop
+        // flooded /api/admin/cell and left the editor permanently 'Menyimpan'.
+        saveBlockedRef.current=true;
+        setSaveError('Gagal menyimpan sel: '+(e.message||'server belum siap'));
       }finally{
         cellSavingRef.current=false;
-        if(pendingCellsRef.current.size) setTimeout(()=>setPayload(p=>p?({...p}):p),900);
+        if(!saveBlockedRef.current&&pendingCellsRef.current.size) setTimeout(()=>setPayload(p=>p?({...p}):p),900);
       }
     },700);
     return()=>clearTimeout(timer);
   },[payload,year,period,periodMissing]);
 
 useEffect(()=>{
-    if(!payload||year===null||!dirty||savingRef.current||cellSavingRef.current||pendingSheetsRef.current.size===0||periodMissing) return;
+    if(!payload||year===null||!dirty||savingRef.current||cellSavingRef.current||saveBlockedRef.current||pendingSheetsRef.current.size===0||periodMissing) return;
     const timer=setTimeout(async()=>{
-      if(savingRef.current||cellSavingRef.current) return;
+      if(savingRef.current||cellSavingRef.current||saveBlockedRef.current) return;
       savingRef.current=true;
       const atVersion=editVersionRef.current;
       const entries=[...pendingSheetsRef.current.entries()];
@@ -806,10 +823,11 @@ useEffect(()=>{
           setToast('Perubahan tersimpan otomatis ke database pusat');
         }
       }catch(e){
-        setToast('Autosave tertunda: '+(e.message||'server belum siap'));
+        saveBlockedRef.current=true;
+        setSaveError('Gagal menyimpan sheet: '+(e.message||'server belum siap'));
       }finally{
         savingRef.current=false;
-        if(pendingSheetsRef.current.size||pendingCellsRef.current.size)setTimeout(()=>setPayload(p=>p?({...p}):p),900);
+        if(!saveBlockedRef.current&&(pendingSheetsRef.current.size||pendingCellsRef.current.size))setTimeout(()=>setPayload(p=>p?({...p}):p),900);
       }
     },1100);
     return()=>clearTimeout(timer);
@@ -924,6 +942,7 @@ useEffect(()=>{
     setYears(store);setPayload(normalized);setDirty(false);
     setToast(`Data TA ${nextYear} tersimpan di database pusat`);
   }; const save=async()=>{
+    saveBlockedRef.current=false;setSaveError('');
     if(cellSavingRef.current||savingRef.current)return setToast('Penyimpanan otomatis sedang berlangsung; tunggu sampai selesai.');
     if(pendingCellsRef.current.size && !pendingSheetsRef.current.size){
       cellSavingRef.current=true;
@@ -932,7 +951,7 @@ useEffect(()=>{
         for(let i=0;i<sent.length;i+=500){const part=sent.slice(i,i+500);await saveCells(part.map(({key,version,...x})=>x),year,period);}
         for(const x of sent)if(cellVersionsRef.current.get(x.key)===x.version)pendingCellsRef.current.delete(x.key);
         if(!pendingCellsRef.current.size){setDirty(false);setToast('Sel berhasil disimpan ke Google Sheets.');}
-      }catch(e){setToast('Gagal menyimpan: '+e.message);}finally{cellSavingRef.current=false;}
+      }catch(e){saveBlockedRef.current=true;setSaveError('Gagal menyimpan: '+e.message);}finally{cellSavingRef.current=false;}
       return;
     }
     if(!pendingSheetsRef.current.size){setToast('Semua perubahan sudah tersimpan.');return;}
@@ -943,7 +962,7 @@ useEffect(()=>{
       for(const [name,version] of entries){await saveSheet(clone(payload.sheets[name]),year,{period});if(pendingSheetsRef.current.get(name)===version)pendingSheetsRef.current.delete(name);}
       if(!pendingSheetsRef.current.size&&!pendingCellsRef.current.size)setDirty(false);
       setToast('Perubahan sheet tersimpan.');
-    }catch(e){setToast('Gagal menyimpan sheet: '+e.message)}finally{savingRef.current=false;}
+    }catch(e){saveBlockedRef.current=true;setSaveError('Gagal menyimpan sheet: '+e.message)}finally{savingRef.current=false;}
   };
   const reset=async()=>{const base=baseline?normalizePayloadForYear(baseline,year):null;if(!base)return;const current=recalculatePayload(base);await persistYears(current,year,years);setToast(`TA ${year} dikembalikan ke sumber awal`)};
   const exportJson=()=>downloadBlob(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),`database-realisasi-kinerja-${year}.json`); const exportAllYears=()=>downloadBlob(new Blob([JSON.stringify({years:{...years,[year]:payload}},null,2)],{type:'application/json'}),'database-realisasi-kinerja-semua-tahun.json');
@@ -1010,7 +1029,7 @@ useEffect(()=>{
       const resp=await fetchState(year,nextPeriod);if(!resp?.ok)throw new Error(resp?.message||'Periode tidak tersedia');
       const current=recalculatePayload(ensureMonevReport(resp.payload,year).payload);
       setPayload(current);setBaseline(clone(current));setPeriod(nextPeriod);setPeriodMissing(Boolean(resp.needsImport&&nextPeriod!=='annual'));
-      setDirty(false);remoteRevisionRef.current='';setSelectedRow(null);setQuery('');
+      setDirty(false);setSaveError('');saveBlockedRef.current=false;remoteRevisionRef.current='';setSelectedRow(null);setQuery('');
       const url=new URL(window.location.href);url.searchParams.set('period',nextPeriod);url.searchParams.set('year',year);history.replaceState(null,'',url);
       setToast(resp.needsImport?`Periode ${nextPeriod} belum dibuat. Salin data tahunan untuk mulai.`:`Periode ${nextPeriod} ditampilkan.`);
     }catch(e){setToast('Tidak dapat membuka periode: '+e.message)}finally{setPeriodBusy(false)}
@@ -1036,7 +1055,7 @@ useEffect(()=>{
   const exportActiveExcel=()=>exportExcelPayload(payload,year); const exportSheetExcel=()=>exportExcelPayload(payload,year,selectedSheet);
   const nav=[['dashboard','✦','Dashboard'],['realisasi','◒','Realisasi'],['kinerja','◫','Kinerja'],['renaksi','◇','Monev Renaksi'],['penugasan','◎','Penugasan'],['kertas','▦','Kertas Kerja'],['editor','✎','Edit & Input']];
   return <div className="app"><div className="ambient ambient-1"></div><div className="ambient ambient-2"></div><div className="ambient ambient-3"></div><div className="noise"></div><header className="topbar"><button className="menu-toggle" onClick={()=>setSidebarOpen(v=>!v)}>☰</button><div className="brand"><div className="brand-mark">ID</div><div><strong>{ORG}</strong><span>DATABASE REALISASI KINERJA • KERTAS KERJA & MONITORING</span></div></div><div className="top-right"><span className="live"><i></i> BACKEND • SECURE</span><button className={dirty?'save-badge dirty year-btn':'save-badge year-btn'} onClick={()=>setYearModal(true)}>{dirty?'MENYIMPAN…':'TERSIMPAN'}</button><button className="year year-btn" disabled={periodBusy} onClick={()=>setYearModal(true)}>TA {year} ▾</button>
-    <label className="period-select"><span>Periode</span><select aria-label="Periode laporan" disabled={periodBusy} value={period} onChange={e=>selectPeriod(e.target.value)}>{PERIOD_OPTIONS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}</select></label><a className="soft" href={import.meta.env.VITE_DASHBOARD_URL||"https://sikapinspektoratkabmahakamulu.pages.dev"} target="_blank" rel="noopener noreferrer">Dashboard ↗</a><button className="soft logout-btn" onClick={logout} title="Keluar dari sesi">Keluar</button></div></header><aside className={`sidebar ${sidebarOpen?'open':''}`}><div className="side-heading">KERTAS KERJA & MONITORING</div>{nav.map(([id,ic,label])=><button key={id} className={active===id?'nav active':'nav'} onClick={()=>{setActive(id);setSidebarOpen(false)}}><span>{ic}</span><b>{label}</b></button>)}<div className="side-summary"><small>{sheetNames.length} SHEET TERHUBUNG</small><strong>{ORG}</strong><em>Tahun aktif: {year} • {dirty?'Perubahan belum disimpan':'Siap dipantau'}</em></div></aside><main className="main">{periodMissing?<section className="period-empty"><h2>Periode {PERIOD_OPTIONS.find(x=>x.value===period)?.label} belum dibuat</h2><p>Data tiap periode disimpan dalam kelompok sheet Google yang terpisah. Buat snapshot dari tahun anggaran utama sebelum mulai mengisi. Ini bukan agregasi otomatis bulanan.</p><button className="primary" disabled={periodBusy} onClick={initializePeriod}>{periodBusy?'Membuat periode…':'Buat periode dari TA utama'}</button><button className="soft" onClick={()=>selectPeriod('annual')}>Kembali ke data tahunan</button></section>:<>{active==='dashboard'&&<Dashboard derived={derived} year={year} onNav={setActive} onSheet={n=>{setSelectedSheet(n);setActive('kertas')}}/>}{active==='realisasi'&&<Realisasi payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Realisasi Fisik & Keu',row)}/>} {active==='kinerja'&&<Kinerja payload={payload} derived={derived} onEdit={(sheet,row=null)=>row===null?(setSelectedSheet(sheet),setActive('editor')):openRowEditor(sheet,row)}/>} {active==='renaksi'&&<MonevRenaksiPage payload={payload} updateCell={updateCell} year={year} dirty={dirty} onOpenSheet={()=>{setSelectedSheet(MONEV_REPORT_SHEET);setActive('editor')}}/>} {active==='penugasan'&&<Penugasan payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Rekap realisasi PKPT',row)} onAdd={()=>openRowEditor('Rekap realisasi PKPT','new')}/>} {active==='kertas'&&<KertasKerja payload={payload} derived={derived} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} query={query} setQuery={setQuery} selectedRow={selectedRow} setSelectedRow={setSelectedRow} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor(selectedSheet,row)} onAdd={()=>openRowEditor(selectedSheet,'new')} onExportSheet={exportSheetExcel} onImportExcel={()=>xlsxRef.current?.click()}/>} {active==='editor'&&<SpreadsheetEditor onCells={updateCellsBatch} payload={payload} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} onStructure={structure} onRefresh={reloadWorkbook} onTemplate={useTemplate} query={query} setQuery={setQuery} updateCell={updateCell} addRow={addRow} deleteRow={deleteRow} duplicateRow={duplicateRow} save={save} reset={reset} exportJson={exportJson} exportAllYears={exportAllYears} importJson={importJson} rollbackLastImport={rollbackLastImport} onAudit={()=>{setAuditEntries(readAudit());setAuditModal(true)}} onImportExcel={()=>xlsxRef.current?.click()} exportExcel={exportActiveExcel} exportSheetExcel={exportSheetExcel} fileRef={fileRef} dirty={dirty}/>}</>}</main>{toast&&<div className="toast">✓ {toast}</div>}{yearModal&&<YearManagerModal years={years} activeYear={year} dirty={dirty} onClose={()=>setYearModal(false)} onSwitch={switchYear} onCreate={createYear} onRename={()=>setYearEditModal(true)} onSave={save} onExportAll={exportAllYears}/>} {yearEditModal&&<YearEditModal currentYear={year} onClose={()=>setYearEditModal(false)} onRename={v=>renameYearData(year,Number(v))}/>} {rowModal&&<RowEditorModal payload={payload} sheetName={rowModal.sheet} rowIndex={rowModal.row} onClose={()=>setRowModal(null)} onSave={commitRowEditor} onAdd={(sheet,values)=>{addRow(sheet,values);setRowModal(null)}}/>} {importModal&&<ImportExcelModal info={importModal} onClose={()=>setImportModal(null)} onApply={commitImported}/>} {auditModal&&<AuditModal entries={auditEntries} onClose={()=>setAuditModal(false)} onExport={exportAudit}/>} <input hidden ref={xlsxRef} type="file" accept=".xlsx,.xls" onChange={onExcelSelected}/></div>;
+    <label className="period-select"><span>Periode</span><select aria-label="Periode laporan" disabled={periodBusy} value={period} onChange={e=>selectPeriod(e.target.value)}>{PERIOD_OPTIONS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}</select></label><a className="soft" href={import.meta.env.VITE_DASHBOARD_URL||"https://sikapinspektoratkabmahakamulu.pages.dev"} target="_blank" rel="noopener noreferrer">Dashboard ↗</a><button className="soft logout-btn" onClick={logout} title="Keluar dari sesi">Keluar</button></div></header><aside className={`sidebar ${sidebarOpen?'open':''}`}><div className="side-heading">KERTAS KERJA & MONITORING</div>{nav.map(([id,ic,label])=><button key={id} className={active===id?'nav active':'nav'} onClick={()=>{setActive(id);setSidebarOpen(false)}}><span>{ic}</span><b>{label}</b></button>)}<div className="side-summary"><small>{sheetNames.length} SHEET TERHUBUNG</small><strong>{ORG}</strong><em>Tahun aktif: {year} • {dirty?'Perubahan belum disimpan':'Siap dipantau'}</em></div></aside><main className="main">{saveError&&<section className="save-error-alert" role="alert"><div><strong>Perubahan belum tersimpan di Google Sheets.</strong><p>{saveError}</p><small>Autosave dihentikan sementara agar server tidak dibanjiri HTTP 503. Jangan menutup tab sebelum masalah diperbaiki. Perubahan lokal masih ada selama tab ini terbuka.</small></div><button className="primary" onClick={retrySave}>Coba simpan lagi</button><a href="/api/admin/diagnostics" target="_blank" rel="noopener noreferrer">Periksa koneksi</a></section>}{periodMissing?<section className="period-empty"><h2>Periode {PERIOD_OPTIONS.find(x=>x.value===period)?.label} belum dibuat</h2><p>Data tiap periode disimpan dalam kelompok sheet Google yang terpisah. Buat snapshot dari tahun anggaran utama sebelum mulai mengisi. Ini bukan agregasi otomatis bulanan.</p><button className="primary" disabled={periodBusy} onClick={initializePeriod}>{periodBusy?'Membuat periode…':'Buat periode dari TA utama'}</button><button className="soft" onClick={()=>selectPeriod('annual')}>Kembali ke data tahunan</button></section>:<>{active==='dashboard'&&<Dashboard derived={derived} year={year} onNav={setActive} onSheet={n=>{setSelectedSheet(n);setActive('kertas')}}/>}{active==='realisasi'&&<Realisasi payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Realisasi Fisik & Keu',row)}/>} {active==='kinerja'&&<Kinerja payload={payload} derived={derived} onEdit={(sheet,row=null)=>row===null?(setSelectedSheet(sheet),setActive('editor')):openRowEditor(sheet,row)}/>} {active==='renaksi'&&<MonevRenaksiPage payload={payload} updateCell={updateCell} year={year} dirty={dirty} onOpenSheet={()=>{setSelectedSheet(MONEV_REPORT_SHEET);setActive('editor')}}/>} {active==='penugasan'&&<Penugasan payload={payload} derived={derived} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor('Rekap realisasi PKPT',row)} onAdd={()=>openRowEditor('Rekap realisasi PKPT','new')}/>} {active==='kertas'&&<KertasKerja payload={payload} derived={derived} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} query={query} setQuery={setQuery} selectedRow={selectedRow} setSelectedRow={setSelectedRow} onEdit={(row=null)=>row===null?setActive('editor'):openRowEditor(selectedSheet,row)} onAdd={()=>openRowEditor(selectedSheet,'new')} onExportSheet={exportSheetExcel} onImportExcel={()=>xlsxRef.current?.click()}/>} {active==='editor'&&<SpreadsheetEditor onCells={updateCellsBatch} payload={payload} selectedSheet={selectedSheet} setSelectedSheet={setSelectedSheet} onStructure={structure} onRefresh={reloadWorkbook} onTemplate={useTemplate} query={query} setQuery={setQuery} updateCell={updateCell} addRow={addRow} deleteRow={deleteRow} duplicateRow={duplicateRow} save={save} reset={reset} exportJson={exportJson} exportAllYears={exportAllYears} importJson={importJson} rollbackLastImport={rollbackLastImport} onAudit={()=>{setAuditEntries(readAudit());setAuditModal(true)}} onImportExcel={()=>xlsxRef.current?.click()} exportExcel={exportActiveExcel} exportSheetExcel={exportSheetExcel} fileRef={fileRef} dirty={dirty} saveError={saveError}/>}</>}</main>{toast&&<div className="toast">{toast}</div>}{yearModal&&<YearManagerModal years={years} activeYear={year} dirty={dirty} onClose={()=>setYearModal(false)} onSwitch={switchYear} onCreate={createYear} onRename={()=>setYearEditModal(true)} onSave={save} onExportAll={exportAllYears}/>} {yearEditModal&&<YearEditModal currentYear={year} onClose={()=>setYearEditModal(false)} onRename={v=>renameYearData(year,Number(v))}/>} {rowModal&&<RowEditorModal payload={payload} sheetName={rowModal.sheet} rowIndex={rowModal.row} onClose={()=>setRowModal(null)} onSave={commitRowEditor} onAdd={(sheet,values)=>{addRow(sheet,values);setRowModal(null)}}/>} {importModal&&<ImportExcelModal info={importModal} onClose={()=>setImportModal(null)} onApply={commitImported}/>} {auditModal&&<AuditModal entries={auditEntries} onClose={()=>setAuditModal(false)} onExport={exportAudit}/>} <input hidden ref={xlsxRef} type="file" accept=".xlsx,.xls" onChange={onExcelSelected}/></div>;
 }
 function Dashboard({ derived, year, onNav, onSheet }) {
   const [pulse, setPulse] = useState(0); const [detail, setDetail] = useState(null);

@@ -6,8 +6,8 @@ export async function apiJson(url, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(data?.message || `HTTP ${res.status}`);
-    err.status = res.status;
+    const err = new Error(`${data?.code ? `[${data.code}] ` : ''}${data?.message || `HTTP ${res.status}`}`);
+    err.status = res.status; err.code = data?.code;
     throw err;
   }
   return data;
@@ -19,8 +19,8 @@ export const adminMe = async () => {
   // Unauthenticated is a normal state for the login gate; avoid a red console error.
   if (res.status === 401) return { ...data, ok: false };
   if (!res.ok) {
-    const err = new Error(data?.message || `HTTP ${res.status}`);
-    err.status = res.status;
+    const err = new Error(`${data?.code ? `[${data.code}] ` : ''}${data?.message || `HTTP ${res.status}`}`);
+    err.status = res.status; err.code = data?.code;
     throw err;
   }
   return data;
