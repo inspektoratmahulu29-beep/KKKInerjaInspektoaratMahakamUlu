@@ -1,3 +1,4 @@
+import { remapFormula } from '../functions/lib/sheets.js';
 import { expandExcelSharedFormulas } from './excelSharedFormulas.js';
 import { SpreadsheetEditor } from './SpreadsheetEditor.jsx';
 import { calculateMetrics, capaianMeta, capaianMetric } from '../functions/lib/metrics.js';
@@ -359,68 +360,6 @@ function normalizeSheetKey(name) {
     .replace(/output/g, 'output');
 }
 
-function mergeSheetRecords(primary, secondary){
-  if(!primary) return clone(secondary);
-  if(!secondary) return clone(primary);
-  const a=clone(primary), b=secondary;
-  const rows=Math.max(a.values?.length||0,b.values?.length||0);
-  const cols=Math.max(a.cols||0,b.cols||0,...(a.values||[]).map(r=>r?.length||0),...(b.values||[]).map(r=>r?.length||0));
-  a.values=a.values||[];
-  for(let r=0;r<rows;r++){
-    if(!a.values[r]) a.values[r]=Array(cols).fill('');
-    if(!b.values?.[r]) continue;
-    if(a.values[r].length<cols) a.values[r].length=cols;
-    for(let c=0;c<cols;c++){
-      const av=a.values[r][c], bv=b.values[r][c];
-      if((av===undefined||av===null||cleanText(av)==='') && bv!==undefined && bv!==null && cleanText(bv)!=='') a.values[r][c]=bv;
-    }
-  }
-  a.rows=a.values.length; a.cols=cols;
-  a.formulas={...(b.formulas||{}),...(a.formulas||{})};
-  if(!a.presentation && b.presentation) a.presentation=clone(b.presentation);
-  return a;
-}
-function canonicalizeSheets(sheets, canonicalNames){
-  const source=sheets||{};
-  const names=Object.keys(source);
-  const canon=(canonicalNames&&canonicalNames.length?canonicalNames:Object.keys(source));
-  const out={}; const assigned=new Set(); let changed=false;
-  // Exact/normalized canonical matches first.
-  for(const c of canon){
-    const candidates=names.filter(n=>!assigned.has(n) && (n===c || normalizeSheetKey(n)===normalizeSheetKey(c)));
-    if(candidates.length){
-      let pick=candidates[0];
-      for(const n of candidates){
-        if((source[n]?.values?.length||0)>(source[pick]?.values?.length||0)) pick=n;
-      }
-      let merged=clone(source[pick]); assigned.add(pick);
-      for(const n of candidates){
-        if(n===pick) continue;
-        merged=mergeSheetRecords(merged,source[n]); assigned.add(n);
-      }
-      if(pick!==c || candidates.length>1) changed=true;
-      merged.name=c; out[c]=merged;
-    }
-  }
-  // Fuzzy aliases (conservative) and true new sheets.
-  for(const n of names){
-    if(assigned.has(n)) continue;
-    let best=null;
-    for(const c of canon){
-      if(out[c]) continue;
-      if(!compatibleSheetNames(n,c))continue;
-      const score=similarity(n,c);
-      if(score>=0.82 && (!best||score>best.score)) best={c,score};
-    }
-    if(best){
-      out[best.c]=mergeSheetRecords(out[best.c],source[n]); assigned.add(n); changed=true;
-    } else {
-      // Preserve genuinely new sheet names.
-      out[n]=source[n]; assigned.add(n);
-    }
-  }
-  return {sheets:out,changed};
-}
 function similarity(a,b){
   a=normalizeSheetKey(a); b=normalizeSheetKey(b); if(a===b) return 1;
   const grams=(x,n=2)=>{const out=[];for(let i=0;i<x.length-n+1;i++)out.push(x.slice(i,i+n));return out;};
@@ -428,18 +367,31 @@ function similarity(a,b){
   let inter=0; A.forEach(x=>{if(B.has(x))inter++;}); return (2*inter)/(A.size+B.size);
 }
 function buildSchemaMapping(importedPayload, currentPayload){
-  const currentNames=Object.keys(canonicalizeSheets(currentPayload?.sheets||{},Object.keys(currentPayload?.sheets||{})).sheets);
-  const importedCanon=canonicalizeSheets(importedPayload?.sheets||{},currentNames).sheets;
-  const importedNames=Object.keys(importedCanon);
-  const used=new Set(); const rows=[];
-  for(const expected of currentNames){
-    let best=null;
-    for(const actual of importedNames){ if(used.has(actual)||!compatibleSheetNames(expected,actual)) continue; const score=similarity(expected,actual); if(!best||score>best.score)best={actual,score}; }
-    const threshold=expected===best?.actual?1:(best?.score||0);
-    if(best && threshold>=0.82){ used.add(best.actual); rows.push({expected,actual:best.actual,score:+threshold.toFixed(2),status:best.actual===expected?'exact':'fuzzy'}); }
-    else rows.push({expected,actual:'',score:0,status:'missing'});
+  const currentNames=Object.keys(currentPayload?.sheets||{});
+  const importedNames=Object.keys(importedPayload?.sheets||{});
+  const unmatched=importedNames.filter(n=>!currentNames.includes(n));
+  const missing=currentNames.filter(n=>!importedNames.includes(n));
+  const candidates=[];
+  for(const expected of missing) for(const actual of unmatched){
+    if(!compatibleSheetNames(expected,actual)) continue;
+    const score=similarity(expected,actual);
+    if(score>=0.82)candidates.push({expected,actual,score,status:'fuzzy'});
   }
-  for(const actual of importedNames.filter(n=>!used.has(n))) rows.push({expected:'',actual,score:0,status:'new'});
+  const used=new Set();
+  const rows=currentNames.map(expected=>{
+    if(importedNames.includes(expected)){
+      used.add(expected);
+      return {expected,actual:expected,score:1,status:'exact'};
+    }
+    const matches=candidates.filter(m=>m.expected===expected).sort((a,b)=>b.score-a.score);
+    const best=matches[0];
+    if(best && best.score!==matches[1]?.score &&
+       !candidates.some(m=>m!==best && m.actual===best.actual && m.score>=best.score)){
+      used.add(best.actual);return best;
+    }
+    return {expected,actual:'',score:0,status:'missing'};
+  });
+  for(const actual of importedNames.filter(n=>!used.has(n)))rows.push({expected:'',actual,score:0,status:'new'});
   return rows;
 }
 function importSchemaStats(mapping){
@@ -449,13 +401,14 @@ function extractWorkbookPresentation(wb){
   const sheets={};
   for(const name of wb.SheetNames){
     const ws=wb.Sheets[name];
+    const extent=XLSX.utils.decode_range(ws['!ref']||'A1').e;
     sheets[name]={
       ref: ws['!ref']||'A1',
       merges: (ws['!merges']||[]).map(m=>({s:{r:m.s.r,c:m.s.c},e:{r:m.e.r,c:m.e.c}})),
-      cols: (ws['!cols']||[]).map(c=>c?({...c}):null),
-      rows: (ws['!rows']||[]).map(r=>r?({...r}):null),
+      cols: (ws['!cols']||[]).slice(0,extent.c+1).map(c=>c?({...c}):null),
+      rows: (ws['!rows']||[]).slice(0,extent.r+1).map(r=>r?({...r}):null),
       hidden: !!ws['!hidden'],
-      formats: Object.fromEntries(Object.entries(ws).filter(([a,c])=>a[0]!=='!'&&c.z&&(c.v!==undefined||c.f)).map(([a,c])=>[a,{numberFormat:c.z}])),
+      formats: Object.fromEntries(Object.entries(ws).filter(([a,c])=>a[0]!=='!'&&c.z&&c.z!=='General'&&(c.v!==undefined||c.f)).map(([a,c])=>[a,{numberFormat:c.z}])),
       views: ws['!views'] ? clone(ws['!views']) : null,
       autoFilter: ws['!autofilter'] ? clone(ws['!autofilter']) : null,
     };
@@ -493,8 +446,8 @@ function updateWorkbookFromPayload(templateWb,payload, mapping){
   }
   return templateWb;
 }
-function buildPreviewRows(importedPayload,currentPayload){
-  const mapping=buildSchemaMapping(importedPayload,currentPayload); const current=currentPayload?.sheets||{}; const imported=importedPayload?.sheets||{};
+function buildPreviewRows(importedPayload,currentPayload,mapping=buildSchemaMapping(importedPayload,currentPayload)){
+  const current=currentPayload?.sheets||{}; const imported=importedPayload?.sheets||{};
   return mapping.map(m=>{
     if(m.status==='new') return {...m,importRows:imported[m.actual]?.rows||0,currentRows:0,importCols:imported[m.actual]?.cols||0,currentCols:0,formulaCount:Object.keys(imported[m.actual]?.formulas||{}).length};
     const i=imported[m.actual], c=current[m.expected];
@@ -506,6 +459,8 @@ function validateImportPlan(importedPayload,currentPayload,mode,mapping,opts={})
   if(stats.missing>0 && mode!=='merge') warnings.push(`${stats.missing} sheet dari database saat ini tidak ditemukan di file import.`);
   if(stats.fuzzy>0) warnings.push(`${stats.fuzzy} sheet dipetakan berdasarkan kemiripan nama.`);
   if(stats.newSheets>0) warnings.push(`${stats.newSheets} sheet baru ditemukan dan akan ditambahkan dengan nama aslinya. Pastikan tidak ada nama yang salah sebelum mengimpor.`);
+  const cached=importedPayload.meta?.sharedFormulaCached||[];
+  if(cached.length)warnings.unshift(`${cached.length} sel memakai nilai terakhir Excel karena rumus bersama tidak konsisten. Sel ini akan disimpan sebagai nilai tetap: ${cached.join(', ')}.`);
   const audit=formulaAudit(importedPayload);
   if(audit.errors>0) warnings.push(`${audit.errors} nilai error terdeteksi di file import.`);
   const cellRefErrors=audit.issues.filter(i=>i.kind==='ERROR'&&String(i.value).trim().toUpperCase()==='#REF!');
@@ -534,15 +489,21 @@ function parseExcelWorkbook(file) {
     if(sharedFormulaCheck.unresolved.length)throw new Error(`Rumus bersama Excel tidak lengkap: ${sharedFormulaCheck.unresolved.slice(0,3).join(', ')}. Import dibatalkan agar rumus tidak hilang.`);
     const sheets={}; let year=null;
     wb.SheetNames.forEach(name=>{
-      const ws=wb.Sheets[name]; const values=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
-      const formulas={}; const ref=ws['!ref'];
-      if(ref){ const range=XLSX.utils.decode_range(ref); for(let r=range.s.r;r<=range.e.r;r++) for(let c=range.s.c;c<=range.e.c;c++){ const a=XLSX.utils.encode_cell({r,c}); if(ws[a]?.f) formulas[a]='='+(ws[a].f||''); } }
-      while(values.length>1&&!values[values.length-1].some(v=>v!==''&&v!=null)&&!Object.keys(formulas).some(a=>Number(a.match(/\d+$/)?.[0])===values.length))values.pop();
+      const ws=wb.Sheets[name], ref=ws['!ref'];
+      const values=[], formulas={};
+      for(const [a,c] of Object.entries(ws)){
+        if(a.startsWith('!') || (!c.f && (c.v==null || c.t==='z')))continue;
+        const {r,c:col}=XLSX.utils.decode_cell(a);
+        values[r] ||= [];
+        values[r][col]=c.t==='e' ? (c.w||'#ERROR!') : (c.v??'');
+        if(c.f)formulas[a]='='+c.f;
+      }
+      for(let r=0;r<values.length;r++)values[r] ||= [];
       const metaSheet=normalizeImportedSheet(name,values,formulas); metaSheet.ref=ref||'A1'; metaSheet.cols=Math.max(metaSheet.cols, XLSX.utils.decode_range(ref||'A1:A1').e.c+1); metaSheet.presentation=extractWorkbookPresentation({SheetNames:[name],Sheets:{[name]:ws}})[name];
       sheets[name]=metaSheet; for(const row of values.slice(0,8))for(const v of row){const m=String(v).match(/(?:TAHUN ANGGARAN|TA)\s*(20\d{2})/i);if(m)year=Number(m[1]);}
       for(const [a,f] of Object.entries(formulas)) if(isExternalFormula(f)){ const v=ws[a]?.v; if(v!==undefined && !isError(v)) { const rc=XLSX.utils.decode_cell(a); metaSheet.values[rc.r][rc.c]=v; } }
     });
-    return {version:'8.1.5',source:file.name,meta:{organization:ORG,year:year||new Date().getFullYear(),sheetCount:wb.SheetNames.length,preserveFormat:true,sharedFormulasRestored:sharedFormulaCheck.expanded},sheets,_templateBase64:arrayBufferToBase64(buf)};
+    return {version:'8.1.5',source:file.name,meta:{organization:ORG,year:year||new Date().getFullYear(),sheetCount:wb.SheetNames.length,preserveFormat:true,sharedFormulaCached:sharedFormulaCheck.cached||[],sharedFormulasRestored:sharedFormulaCheck.expanded},sheets,_templateBase64:arrayBufferToBase64(buf)};
   });
 }
 
@@ -740,27 +701,21 @@ function derive(payload){
   };
 }
 function prepareImportedForMode(imported,current,mapping,mode,targetYear){
-  const currentCanon=canonicalizeSheets(current?.sheets||{},Object.keys(current?.sheets||{})).sheets;
-  const importedCanon=canonicalizeSheets(imported?.sheets||{},Object.keys(currentCanon)).sheets;
-  const importedNorm={...imported,sheets:importedCanon};
-  if(mode==='merge'){
-    const out=clone(current); out.sheets=currentCanon;
-    for(const m of mapping){ if(!m.actual) continue; const incoming=clone(importedNorm.sheets[m.actual]); if((incoming?.rows||0)>0){ if(m.status==='new') out.sheets[m.actual]=incoming; else out.sheets[m.expected]=incoming; } }
-    out.meta={...(out.meta||{}),year:targetYear,sheetCount:Object.keys(out.sheets||{}).length}; return recalculatePayload(out);
+  const sheets=mode==='newyear'?{}:{...current?.sheets};
+  const names=Object.fromEntries(mapping.filter(m=>m.actual).map(m=>{
+    const name=m.expected||m.actual;
+    return [m.actual,mode==='newyear' && isOfficialReportName(name)?officialReportName(targetYear):name];
+  }));
+  const aliases=Object.fromEntries(Object.entries(names).filter(([src,dst])=>src!==dst));
+  for(const [actual,name] of Object.entries(names)){
+    const source=imported.sheets[actual];
+    if(!source.rows && sheets[name])continue;
+    let formulas=source.formulas;
+    if(Object.keys(aliases).length)formulas=Object.fromEntries(Object.entries(formulas||{}).map(
+      ([a,f])=>[a,remapFormula(f,aliases)]));
+    sheets[name]={...source,name,formulas};
   }
-  // Active-year replace is a safe update: matched non-empty sheets are replaced, while missing/empty sheets from the current database are preserved.
-  const out={version:'8.1.5',source:importedNorm.source,meta:{...(importedNorm.meta||{}),year:targetYear,preserveFormat:true},sheets:clone(currentCanon||{})};
-  for(const m of mapping){
-    if(!m.actual) continue;
-    const incoming=clone(importedNorm.sheets[m.actual]);
-    if((incoming?.rows||0)===0 || (incoming?.cols||0)===0) continue;
-    out.sheets[m.expected||m.actual]=incoming;
-  }
-  if(mode==='newyear'){
-    out.sheets={};
-    for(const [name,sheet] of Object.entries(importedNorm.sheets||{})) out.sheets[name]=clone(sheet);
-  }
-  out.meta.sheetCount=Object.keys(out.sheets).length; return recalculatePayload(normalizePayloadForYear(out,targetYear));
+  return {version:imported.version,source:imported.source,meta:{...imported.meta,year:targetYear,sheetCount:Object.keys(sheets).length},sheets};
 }
 function payloadDiffSummary(before,after){
   const bs=before?.sheets||{}, as=after?.sheets||{}; let sheetsChanged=0,cellsChanged=0,rowsAdded=0,rowsRemoved=0;
@@ -1038,7 +993,7 @@ useEffect(()=>{
   const reset=async()=>{const base=baseline?normalizePayloadForYear(baseline,year):null;if(!base)return;const current=recalculatePayload(base);await persistYears(current,year,years);setToast(`TA ${year} dikembalikan ke sumber awal`)};
   const exportJson=()=>downloadBlob(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),`database-realisasi-kinerja-${year}.json`); const exportAllYears=()=>downloadBlob(new Blob([JSON.stringify({years:{...years,[year]:payload}},null,2)],{type:'application/json'}),'database-realisasi-kinerja-semua-tahun.json');
   const importJson=e=>{const f=e.target.files?.[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{try{const x=JSON.parse(rd.result);if(x?.years){const ys=x.years;const first=Number(Object.keys(ys).sort()[0]);const cur=recalculatePayload(ys[first]);setYears(ys);setYear(first);setPayload(cur)}else if(x?.sheets){const y=yearFromPayload(x);const cur=recalculatePayload(x);setYears(prev=>({...prev,[y]:cur}));setYear(y);setPayload(cur)}else throw new Error();setDirty(true);setToast('JSON berhasil diimpor')}catch{setToast('Import JSON gagal: format tidak valid')} };rd.readAsText(f);e.target.value=''};
-  const onExcelSelected=e=>{const f=e.target.files?.[0];if(!f)return;parseExcelWorkbook(f).then(p=>{const prepared=recalculatePayload(p);const mapping=buildSchemaMapping(prepared,payload);const preview=buildPreviewRows(prepared,payload);const validation=validateImportPlan(prepared,payload,'replace',mapping,{preserveFormat:true});setImportModal({fileName:f.name,payload:prepared,year:yearFromPayload(prepared),sheets:Object.keys(prepared.sheets||{}).length,mapping,preview,validation,preserveFormat:true});}).catch(err=>setToast('Import Excel gagal: '+err.message));e.target.value=''};
+  const onExcelSelected=e=>{const f=e.target.files?.[0];if(!f)return;parseExcelWorkbook(f).then(prepared=>{const mapping=buildSchemaMapping(prepared,payload);const preview=buildPreviewRows(prepared,payload,mapping);const validation=validateImportPlan(prepared,payload,'replace',mapping,{preserveFormat:true});setImportModal({fileName:f.name,payload:prepared,year:yearFromPayload(prepared),sheets:Object.keys(prepared.sheets||{}).length,mapping,preview,validation,preserveFormat:true});}).catch(err=>setToast('Import Excel gagal: '+err.message));e.target.value=''};
   const commitImported=async(mode, preserveFormat=true)=>{
     const p=importModal?.payload;
     if(!p?.sheets || importBusy)return;
@@ -1049,14 +1004,14 @@ useEffect(()=>{
     setImportBusy(true);savingRef.current=true;setSaveError('');
     try{
       const mapping=importModal.mapping||buildSchemaMapping(p,payload);
-      const validation=validateImportPlan(p,payload,mode,mapping,{preserveFormat});
+      const validation=importModal.validation;
       if(!validation.ok)throw new Error(validation.errors.join(' '));
       const importedPrepared=prepareImportedForMode(p,payload,mapping,mode,targetYear);
       const nextPayload=ensureMonevReport(importedPrepared,targetYear).payload;
       // Import only sheets actually present in the selected Excel file. The old
       // implementation sent all 16 sheets (including old analytical sheets),
       // multiplying Google writes and risking overwriting unrelated changes.
-      const affected=new Set(mapping.filter(m=>m.actual).map(m=>{const name=m.expected||m.actual;return mode==='newyear'&&isOfficialReportName(name)?officialReportName(targetYear):name;}));
+      const affected=new Set(mapping.filter(m=>m.actual && (p.sheets[m.actual].rows || mode==='newyear' || !payload.sheets[m.expected||m.actual])).map(m=>{const name=m.expected||m.actual;return mode==='newyear'&&isOfficialReportName(name)?officialReportName(targetYear):name;}));
       const sheetEntries=Object.entries(nextPayload.sheets||{}).filter(([name])=>affected.has(name));
       if(!sheetEntries.length)throw new Error('Tidak ada sheet Excel yang cocok untuk diperbarui.');
       await saveImportBackup(year,payload,years);
@@ -1065,13 +1020,16 @@ useEffect(()=>{
       );
       const total=sheetEntries.length;
       setToast(`Menulis ${total} sheet sumber ke Google Sheets…`);
-      await importSheets(sheetEntries.map(([name,sheet])=>({...clone(sheet),name})),targetYear,mode,period,preserveFormat);
+      await importSheets(sheetEntries.map(([name,sheet])=>({...sheet,name})),targetYear,mode,period,preserveFormat);
       const fresh=await fetchState(targetYear,period);if(!fresh.ok||fresh.needsImport)throw new Error(fresh.message||'Data tidak terbaca sesudah impor.');
       const affectedErrors=[];
-      for(const name of affected){
+      for(const [name,expected] of sheetEntries){
         const sheet=fresh.payload?.sheets?.[name];
         if(!sheet){affectedErrors.push(`${name}: tidak terbaca sesudah impor`);continue;}
-        for(const [cell,formula] of Object.entries(sheet.formulas||{})){
+        for(const cell of Object.keys(expected.formulas||{})){
+          if(!sheet.formulas?.[cell] && affectedErrors.length<12)affectedErrors.push(`${name}!${cell}: rumus belum terbaca`);
+        }
+        for(const cell of Object.keys(sheet.formulas||{})){
           const point=XLSX.utils.decode_cell(cell);
           const current=sheet.values?.[point.r]?.[point.c];
           if(isError(current) && affectedErrors.length<12)affectedErrors.push(`${name}!${cell} (${current})`);
@@ -1081,7 +1039,7 @@ useEffect(()=>{
       const store={...years,[targetYear]:fresh.payload};
       setYears(store);setYear(targetYear);setPayload(fresh.payload);setBaseline(clone(fresh.payload));setDirty(false);
       pendingSheetsRef.current.clear();pendingCellsRef.current.clear();cellVersionsRef.current.clear();remoteRevisionRef.current='';
-      writeAudit(makeAuditEntry(affectedErrors.length?'IMPORT_WITH_FORMULA_ERRORS':'IMPORT_EXCEL',{file:p.source,mode,targetYear,sheetCount:total,stats:importSchemaStats(mapping),formulaAudit:formulaAudit(p),preserveFormat,affectedErrors}));
+      writeAudit(makeAuditEntry(affectedErrors.length?'IMPORT_WITH_FORMULA_ERRORS':'IMPORT_EXCEL',{file:p.source,mode,targetYear,sheetCount:total,stats:importSchemaStats(mapping),formulaAudit:validation.audit,preserveFormat,affectedErrors}));
       setImportModal(null);
       if(affectedErrors.length){
         setSaveError(`Impor tersimpan, tetapi ditemukan masalah rumus sesudah pembacaan Google Sheets: ${affectedErrors.join(' • ')}. Tidak dilakukan rollback otomatis karena data pusat sudah berubah. Periksa sel yang disebutkan atau pulihkan dari salinan Google Sheets.`);

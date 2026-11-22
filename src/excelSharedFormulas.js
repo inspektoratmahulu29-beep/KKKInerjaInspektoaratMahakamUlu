@@ -21,10 +21,11 @@ export function translateSharedFormula(formula, fromCell, toCell) {
   if (!source || !dest) throw new Error(`Alamat formula bersama tidak valid: ${fromCell}/${toCell}`);
   const rowDelta=dest.row-source.row, colDelta=dest.column-source.column;
   // Quoted strings never contain real cell references; preserve them verbatim.
-  return String(formula).split(/("(?:[^"]|"")*"|'(?:[^']|'')*')/g).map((part,i)=>i%2?part:part.replace(/(^|[^A-Za-z0-9_.])((\$?)([A-Za-z]{1,3})(\$?)(\d+))(?![A-Za-z0-9_.]|\s*\()/g,(whole,prefix,ref,absCol,letters,absRow,row)=>{
+  return String(formula).split(/("(?:[^"]|"")*"|'(?:[^']|'')*'|\[[^\]]*\])/g).map((part,i)=>i%2?part:part.replace(/(^|[^A-Za-z0-9_.])((\$?)([A-Za-z]{1,3})(\$?)(\d+))(?![A-Za-z0-9_.!]|\s*\()/g,(whole,prefix,ref,absCol,letters,absRow,row)=>{
     const colIndex=[...letters.toUpperCase()].reduce((v,c)=>v*26+c.charCodeAt(0)-64,0);
     const nextCol=colIndex+(absCol?0:colDelta), nextRow=Number(row)+(absRow?0:rowDelta);
-    if (nextCol<1 || nextRow<1) throw new Error(`Rumus bersama melewati batas sheet: ${fromCell} → ${toCell}`);
+    if (colIndex>16384 || Number(row)>1048576) return whole;
+    if (nextCol<1 || nextRow<1 || nextCol>16384 || nextRow>1048576) throw new Error(`Rumus bersama melewati batas sheet: ${fromCell} → ${toCell}`);
     return prefix+absCol+columnLetters(nextCol)+absRow+nextRow;
   })).join('');
 }
@@ -85,28 +86,54 @@ export async function expandExcelSharedFormulas(buffer, workbook) {
   const workbookDoc=parseXml(workbookXml),relsDoc=parseXml(relsXml);
   const rels=new Map(elements(relsDoc,'Relationship').map(x=>[x.getAttribute('Id'),targetPath(x.getAttribute('Target')||'')]));
   const targets=new Map(elements(workbookDoc,'sheet').map(x=>[x.getAttribute('name'),rels.get(x.getAttribute('r:id')||x.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id'))]));
-  let expanded=0;const unresolved=[];
+  let expanded=0;const unresolved=[],cached=[];
   for(const name of workbook.SheetNames){
     const path=targets.get(name);if(!path)continue;
     const source=await xmlFile(zip,path);if(!source)continue;
+    if(!source.includes('shared')) continue;
     const dom=parseXml(source),ws=workbook.Sheets[name];
-    const anchors=new Map(),children=[];
-    for(const c of elements(dom,'c')){
-      const f=elements(c,'f')[0];
-      if(!f || f.getAttribute('t')!=='shared')continue;
-      const a=c.getAttribute('r'),group=f.getAttribute('si');
-      if(!a||group===null)continue;
-      const text=f.textContent?.trim()||'';
-      if(text)anchors.set(group,{address:a,formula:text});
-      children.push({address:a,group,formula:text});
+    const groups=new Map();
+    for(const f of elements(dom,'f')){
+      if(f.getAttribute('t')!=='shared')continue;
+      const cell=f.parentNode, address=cell.getAttribute('r'), id=f.getAttribute('si');
+      if(!groups.has(id))groups.set(id,[]);
+      groups.get(id).push({address,formula:f.textContent.trim(),range:f.getAttribute('ref'),
+        hasCache:elements(cell,'v').some(v=>v.textContent!==''),point:parseCell(address)});
     }
-    for(const item of children){
-      const base=anchors.get(item.group);
-      if(!base){unresolved.push(`${name}!${item.address} (shared group ${item.group})`);continue;}
-      const formula=item.formula||translateSharedFormula(base.formula,base.address,item.address);
-      if(!ws[item.address])ws[item.address]={t:'n'};
-      if(!ws[item.address].f || !item.formula){ws[item.address].f=formula;expanded++;}
+    for(const members of groups.values()){
+      const masters=members.filter(m=>m.formula && m.range).map(master=>{
+        const [start,end=start]=master.range.split(':').map(parseCell);
+        const contains=m=>start && end && m.point && m.point.row>=start.row && m.point.row<=end.row &&
+          m.point.column>=start.column && m.point.column<=end.column;
+        const conflicts=members.some(m=>{
+          if(!m.formula || m===master || !contains(m))return false;
+          try{return translateSharedFormula(master.formula,master.address,m.address)!==m.formula;}
+          catch{return true;}
+        });
+        return {master,contains,conflicts};
+      });
+      for(const item of members){
+        const candidates=masters.filter(g=>g.contains(item));
+        const owner=candidates.length===1?candidates[0]:null;
+        const cell=ws[item.address] ||= {t:'n'};
+        let formula=item.formula;
+        // A stale shared master can still point at the old total after Excel
+        // values have been edited. A direct reference permits an exact check.
+        const ref=formula.replace(/\$/g,'').toUpperCase();
+        const stale=owner?.conflicts && owner.master===item && parseCell(ref) &&
+          ws[ref]?.v!==undefined && cell.v!==undefined && ws[ref].v!==cell.v;
+        if(!formula && owner && !owner.conflicts){
+          try{formula=translateSharedFormula(owner.master.formula,owner.master.address,item.address);}
+          catch{formula='';}
+        }
+        if(formula && !stale){cell.f=formula;expanded++;continue;}
+        const location=name+'!'+item.address;
+        if(item.hasCache && cell.v!==undefined && cell.t!=='e'){
+          delete cell.f;
+          cached.push(location);
+        }else unresolved.push(location);
+      }
     }
   }
-  return {expanded,unresolved};
+  return {expanded,unresolved,cached};
 }
