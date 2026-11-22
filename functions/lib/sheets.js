@@ -146,6 +146,20 @@ function formulaSeparator(meta) {
   return (/^(id|de|fr|es|it|pt|nl|tr|ru|pl|sv|da|fi|no|cs|uk)([-_]|$)/.test(locale)) ? ';' : ',';
 }
 
+// Import-only verification. Manual saves remain allowed so operators can
+// repair an already-corrupt Google sheet one cell at a time.
+export function assertValidImportSheet(sheet){
+  const values=Array.isArray(sheet?.values)?sheet.values:[];
+  for(let row=0;row<values.length;row++)for(let col=0;col<(values[row]||[]).length;col++){
+    if(typeof values[row][col]==='string'&&values[row][col].trim().toUpperCase()==='#REF!')
+      throw Object.assign(new Error(`Nilai sumber #REF! di ${sheet?.name||'Sheet'}!${cellAddress(row,col)}. Import dibatalkan.`),{status:400});
+  }
+  for(const [cell,formula] of Object.entries(sheet?.formulas||{})){
+    if(/#REF!/i.test(String(formula)))
+      throw Object.assign(new Error(`Rumus sumber tidak valid di ${sheet?.name||'Sheet'}!${cell}: #REF!. Import dibatalkan.`),{status:400});
+  }
+}
+
 export function rowsMatrix(sheet, separator = ',', titles = {}) {
   const values = Array.isArray(sheet?.values) ? sheet.values : [];
   const cols = Math.max(
@@ -166,8 +180,9 @@ export function rowsMatrix(sheet, separator = ',', titles = {}) {
   }));
 }
 
-async function clearAndWriteSheet(env, title, sheet, accessToken, meta = null,year=2026,period='annual') {
-  const matrix = rowsMatrix(sheet, formulaSeparator(meta), titleMap(meta,year,period));
+async function clearAndWriteSheet(env, title, sheet, accessToken, meta = null,year=2026,period='annual',importMode=false) {
+  const prepared = rowsMatrix(sheet, formulaSeparator(meta), titleMap(meta,year,period));
+  const matrix = importMode ? rawValueMatrix(sheet,prepared) : prepared;
   const rows = matrix.length;
   const cols = Math.max(Number(sheet?.cols) || 0, ...matrix.map(r => r.length), 1);
   const lastCol = columnLetter(cols - 1);
@@ -185,7 +200,7 @@ async function clearAndWriteSheet(env, title, sheet, accessToken, meta = null,ye
       {
         method: 'POST',
         body: JSON.stringify({
-          valueInputOption: 'USER_ENTERED',
+          valueInputOption: importMode ? 'RAW' : 'USER_ENTERED',
           data: [{
             range: `${q(title)}!A${start + 1}:${lastCol}${endRow}`,
             majorDimension: 'ROWS',
@@ -197,6 +212,7 @@ async function clearAndWriteSheet(env, title, sheet, accessToken, meta = null,ye
     );
     chunks++;
   }
+  if(importMode)await writeFormulaCellsForImport(env,[{sheet,title}],accessToken,meta,{...titleMap(meta,year,period),[sheet.name]:title});
 
   // Remove stale cells only after all new values have been accepted.
   const cleanup = [];
@@ -228,9 +244,42 @@ function estimateBytes(value) {
   try { return JSON.stringify(value).length; } catch { return 0; }
 }
 
+// Values in an imported workbook are actual Excel values, not spreadsheet-UI
+// input strings. Write them RAW first; reapply only actual formulas afterward.
+// This prevents Google from turning a text code into a date or replacing a
+// cached result with #REF! while other sheets are still being updated.
+function rawValueMatrix(sheet, prepared){
+  return prepared.map((row,r)=>row.map((value,c)=>
+    sheet.values?.[r]?.[c]??''
+  ));
+}
+async function writeFormulaCellsForImport(env,entries,accessToken,meta,titleReferences={}){
+  const separator=formulaSeparator(meta),data=[];
+  for(const {sheet,title} of entries){
+    for(const [cell,f] of Object.entries(sheet?.formulas||{})){
+      if(!/^[A-Z]{1,3}[1-9][0-9]*$/i.test(cell))throw Object.assign(new Error(`Alamat rumus tidak valid: ${sheet.name}!${cell}`),{status:400});
+      if(typeof f!=='string'||!f.startsWith('=')||/#REF!/i.test(f))
+        throw Object.assign(new Error(`Rumus import tidak valid: ${sheet.name}!${cell}`),{status:400});
+      data.push({range:`${q(title)}!${cell}`,majorDimension:'ROWS',values:[[normalizeFormulaSeparators(remapFormula(f,titleReferences),separator)]]});
+    }
+  }
+  // Formula references can span different tabs. Write every tab's RAW values
+  // first, then submit formulas in bounded batches after all inputs exist.
+  const batches=[];let batch=[],size=0;
+  for(const item of data){const bytes=estimateBytes(item)+48;
+    if(batch.length&&(batch.length>=350||size+bytes>650000)){batches.push(batch);batch=[];size=0;}
+    batch.push(item);size+=bytes;
+  }
+  if(batch.length)batches.push(batch);
+  for(const items of batches)await request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchUpdate`,
+    {method:'POST',body:JSON.stringify({valueInputOption:'USER_ENTERED',data:items})},accessToken);
+  return {formulaCells:data.length,formulaBatches:batches.length};
+}
+
 export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
   const entries = Object.entries(sheets || {}).filter(([name, sheet]) => String(name).trim() && sheet);
   if (!entries.length) return { updated: 0, created: 0, results: [] };
+  if(options.import)for(const [,sheet] of entries)assertValidImportSheet(sheet);
 
   const accessToken = await getGoogleAccessToken(env);
   const meta = await getSpreadsheet(env, accessToken);
@@ -248,7 +297,7 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
   // silently resolving the unprefixed 2026 IKU.
   const titleReferences={...titleMap(meta,year,options.period),...Object.fromEntries(targets.map(x=>[x.name,x.title]))};
   const createdTargets = targets.filter(x => !existingByTitle.has(x.title));
-  await ensureSheets(env, createdTargets.map(x=>{
+  const preparedSheets=await ensureSheets(env, createdTargets.map(x=>{
     const sheet=sheets[x.name]||{};
     return {title:x.title,gridProperties:{
       rowCount:Math.max(1000,Number(sheet.grid?.rowCount)||0,sheet.values?.length||0),
@@ -256,20 +305,27 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
     }};
   }), currentSheets, accessToken);
 
-  await applyPresentation(env,sheets,year,accessToken,options.period);
+  await applyPresentation(env,sheets,year,accessToken,options.period,{
+    meta:{...meta,sheets:preparedSheets},existingBefore:new Set(titles),
+    fastImport:options.import===true,preserveFormat:options.preserveFormat!==false
+  });
   const dataItems = [];
   const resultRows = [];
   const cleanupRanges = [];
+  const formulaTargets = [];
 
   for (const x of targets) {
     const src = sheets[x.name] || {};
-    const matrix = rowsMatrix(src, separator, titleReferences);
+    const prepared = rowsMatrix(src, separator, titleReferences);
+    const matrix = options.import ? rawValueMatrix(src,prepared) : prepared;
+    if(options.import) formulaTargets.push({sheet:src,title:x.title});
     const rows = matrix.length;
     const cols = Math.max(Number(src?.cols) || 0, ...matrix.map(r => r.length), 1);
     const lastCol = columnLetter(cols - 1);
     const old = existingByTitle.get(x.title);
-    const oldRows = Number(old?.properties?.gridProperties?.rowCount || 0);
-    const oldCols = Number(old?.properties?.gridProperties?.columnCount || 0);
+    const previousView=(meta.namedRanges||[]).find(n=>n.name===`KKVIEW_${year}_${old?.properties?.sheetId}`)?.range;
+    const oldRows = Number(previousView?.endRowIndex || old?.properties?.gridProperties?.rowCount || 0);
+    const oldCols = Number(previousView?.endColumnIndex || old?.properties?.gridProperties?.columnCount || 0);
 
     resultRows.push({
       name: x.name,
@@ -327,13 +383,15 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
       {
         method: 'POST',
         body: JSON.stringify({
-          valueInputOption: 'USER_ENTERED',
+          valueInputOption: options.import ? 'RAW' : 'USER_ENTERED',
           data: payload.map(({ range, majorDimension, values }) => ({ range, majorDimension, values }))
         })
       },
       accessToken
     );
   }
+
+  const formulasWritten=options.import ? await writeFormulaCellsForImport(env,formulaTargets,accessToken,meta,titleReferences) : {formulaCells:0,formulaBatches:0};
 
   // The old tail is removed only after every write chunk succeeds.
   if (cleanupRanges.length) {
@@ -354,6 +412,7 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
     updated: targets.length,
     created: createdTargets.length,
     batches: batches.length,
+    ...formulasWritten,
     results: resultRows
   };
 }
@@ -364,11 +423,20 @@ export async function readWorkbook(env, canonicalNames, year = 2026, period = 'a
   const currentSheets = meta.sheets || [];
   const titles = currentSheets.map(s => s.properties.title);
   const resolved = canonicalNames
-    .map(name => ({
-      canonical: name,
-      actual: resolveExistingTitle(year, name, titles, period)
-    }))
+    .map(name => ({canonical:name,actual:resolveExistingTitle(year,name,titles,period)}))
     .filter(x => x.actual);
+  // Newly imported tabs must also be visible after refresh. The old reader
+  // silently discarded every sheet outside its fixed list of 15 names.
+  // Discover only year/period-prefixed tabs to avoid pulling another year's
+  // data or unrelated unprefixed tabs from the shared Google Spreadsheet.
+  const prefix=periodTitle(year,'',period);
+  const known=new Set(resolved.map(x=>x.canonical));
+  for(const title of titles){
+    if(!title.startsWith(prefix))continue;
+    const name=title.slice(prefix.length);
+    if(!name || (period==='annual'&&/^(?:M(?:0[1-9]|1[0-2])|Q[1-4]|S[1-2])__/.test(name)) || known.has(name))continue;
+    resolved.push({canonical:name,actual:title});known.add(name);
+  }
 
   if (!resolved.length) {
     return {
@@ -488,6 +556,7 @@ export async function writeSingleSheet(env, sheet, year = 2026, options = {}) {
   if (!env.GOOGLE_SHEETS_SPREADSHEET_ID || !env.GOOGLE_SERVICE_ACCOUNT_JSON) {
     throw new Error('Google Sheets belum dikonfigurasi di backend');
   }
+  if(options.import)assertValidImportSheet(sheet);
   const name = String(sheet?.name || '').trim();
   if (!name) throw new Error('Nama sheet kosong');
   const accessToken = await getGoogleAccessToken(env);
@@ -498,9 +567,12 @@ export async function writeSingleSheet(env, sheet, year = 2026, options = {}) {
   const old = currentSheets.find(s => s.properties.title === targetTitle);
   if(options.createOnly&&old)throw Object.assign(new Error('Sheet sudah ada, tidak akan ditimpa oleh template.'),{status:409});
 
-  await ensureSheets(env, [{title:targetTitle,gridProperties:{rowCount:Math.max(1000,sheet.values?.length||0,Number(sheet.grid?.rowCount)||0),columnCount:Math.max(26,sheet.cols||0,Number(sheet.grid?.columnCount)||0)}}], currentSheets, accessToken);
-  if(options.import)await applyPresentation(env,{[name]:sheet},year,accessToken,options.period);
-  const result = await clearAndWriteSheet(env, targetTitle, sheet, accessToken, meta,year,options.period);
+  const preparedSheets=await ensureSheets(env, [{title:targetTitle,gridProperties:{rowCount:Math.max(1000,sheet.values?.length||0,Number(sheet.grid?.rowCount)||0),columnCount:Math.max(26,sheet.cols||0,Number(sheet.grid?.columnCount)||0)}}], currentSheets, accessToken);
+  if(options.import)await applyPresentation(env,{[name]:sheet},year,accessToken,options.period,{
+    meta:{...meta,sheets:preparedSheets},existingBefore:new Set(titles),
+    fastImport:true,preserveFormat:options.preserveFormat!==false
+  });
+  const result = await clearAndWriteSheet(env, targetTitle, sheet, accessToken, meta,year,options.period,options.import===true);
 
   // clearAndWriteSheet writes a new snapshot after clearing. Single-sheet saves
   // are used for manual editor persistence, so keep the existing behavior but
@@ -643,15 +715,45 @@ export function presentationRequests(sheet,p){
   }
   return requests;
 }
-export async function applyPresentation(env, entries,year,token,period='annual'){
-  const meta=await getSpreadsheet(env,token);const requests=[];
-  for(const [name,sheet] of Object.entries(entries)){const title=resolveExistingTitle(year,name,meta.sheets.map(s=>s.properties.title),period);const p=meta.sheets.find(s=>s.properties.title===title)?.properties;if(p){requests.push(...presentationRequests(sheet,p));
+export async function applyPresentation(env, entries,year,token,period='annual',options={}){
+  const meta=options.meta||await getSpreadsheet(env,token);const requests=[];
+  const existingBefore=options.existingBefore||new Set();
+  for(const [name,sheet] of Object.entries(entries)){const title=resolveExistingTitle(year,name,meta.sheets.map(s=>s.properties.title),period);const p=meta.sheets.find(s=>s.properties.title===title)?.properties;if(p){
+    const isExistingImport=options.fastImport===true && existingBefore.has(title);
+    if(isExistingImport){
+      // Existing Google formatting/merges and formulas are never destroyed on a
+      // routine Excel refresh. Only grow a grid if the new sheet needs space.
+      const rowCount=Math.max(1,sheet.values?.length||0,Number(sheet.rows)||0);
+      const columnCount=Math.max(1,Number(sheet.cols)||0,...(sheet.values||[]).map(r=>r.length));
+      if(rowCount>p.gridProperties.rowCount || columnCount>p.gridProperties.columnCount){
+        requests.push({updateSheetProperties:{properties:{sheetId:p.sheetId,gridProperties:{
+          rowCount:Math.max(p.gridProperties.rowCount,rowCount),
+          columnCount:Math.max(p.gridProperties.columnCount,columnCount)
+        }},fields:'gridProperties.rowCount,gridProperties.columnCount'}});
+      }
+    }else if(options.preserveFormat!==false){
+      requests.push(...presentationRequests(sheet,p));
+    }
+
     const viewName=`KKVIEW_${year}_${p.sheetId}`;
-    for(const n of meta.namedRanges||[])if(n.name===viewName)requests.push({deleteNamedRange:{namedRangeId:n.namedRangeId}});
-    requests.push({addNamedRange:{namedRange:{name:viewName,range:{sheetId:p.sheetId,startRowIndex:0,endRowIndex:Math.max(1,sheet.values.length),startColumnIndex:0,endColumnIndex:Math.max(1,sheet.cols||1)}}}});
+    const wantedView={sheetId:p.sheetId,startRowIndex:0,endRowIndex:Math.max(1,sheet.values?.length||0),startColumnIndex:0,endColumnIndex:Math.max(1,sheet.cols||1)};
+    const oldView=(meta.namedRanges||[]).find(n=>n.name===viewName);
+    if(!oldView)requests.push({addNamedRange:{namedRange:{name:viewName,range:wantedView}}});
+    else if(oldView.range?.endRowIndex!==wantedView.endRowIndex || oldView.range?.endColumnIndex!==wantedView.endColumnIndex)
+      requests.push({updateNamedRange:{namedRange:{namedRangeId:oldView.namedRangeId,range:wantedView},fields:'range'}});
     const prefix=`KKCOL_${year}_${p.sheetId}_`;
-    for(const n of meta.namedRanges||[])if(n.name.startsWith(prefix))requests.push({deleteNamedRange:{namedRangeId:n.namedRangeId}});
-    for(let c=0;c<(sheet.cols||1);c++)requests.push({addNamedRange:{namedRange:{name:prefix+c,range:{sheetId:p.sheetId,startRowIndex:0,endRowIndex:1,startColumnIndex:c,endColumnIndex:c+1}}}});
+    const prior=(meta.namedRanges||[]).filter(n=>n.name.startsWith(prefix));
+    const cols=Math.max(1,Number(sheet.cols)||0);
+    const identity=prior.length===cols && prior.every(n=>{
+      const index=Number(n.name.slice(prefix.length));return Number.isInteger(index)&&index>=0&&index<cols&&(n.range?.startColumnIndex||0)===index;
+    });
+    // A newly imported workbook uses its own actual column positions. Replace
+    // obsolete mappings only when needed, rather than every time Validate OK
+    // is pressed (which previously created hundreds of Google API mutations).
+    if(!identity){
+      for(const n of prior)requests.push({deleteNamedRange:{namedRangeId:n.namedRangeId}});
+      for(let c=0;c<cols;c++)requests.push({addNamedRange:{namedRange:{name:prefix+c,range:{sheetId:p.sheetId,startRowIndex:0,endRowIndex:1,startColumnIndex:c,endColumnIndex:c+1}}}});
+    }
   }}
   for(let i=0;i<requests.length;i+=400)await request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}:batchUpdate`,{method:'POST',body:JSON.stringify({requests:requests.slice(i,i+400)})},token);
 }
