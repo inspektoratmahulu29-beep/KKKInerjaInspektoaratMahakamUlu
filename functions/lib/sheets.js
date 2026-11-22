@@ -181,8 +181,7 @@ export function rowsMatrix(sheet, separator = ',', titles = {}) {
 }
 
 async function clearAndWriteSheet(env, title, sheet, accessToken, meta = null,year=2026,period='annual',importMode=false) {
-  const prepared = rowsMatrix(sheet, formulaSeparator(meta), titleMap(meta,year,period));
-  const matrix = importMode ? rawValueMatrix(sheet,prepared) : prepared;
+  const matrix = importMode ? rawValueMatrix(sheet) : rowsMatrix(sheet, formulaSeparator(meta), titleMap(meta,year,period));
   const rows = matrix.length;
   const cols = Math.max(Number(sheet?.cols) || 0, ...matrix.map(r => r.length), 1);
   const lastCol = columnLetter(cols - 1);
@@ -248,19 +247,33 @@ function estimateBytes(value) {
 // input strings. Write them RAW first; reapply only actual formulas afterward.
 // This prevents Google from turning a text code into a date or replacing a
 // cached result with #REF! while other sheets are still being updated.
-function rawValueMatrix(sheet, prepared){
-  return prepared.map((row,r)=>row.map((value,c)=>
-    sheet.values?.[r]?.[c]??''
-  ));
+function rawValueMatrix(sheet){
+  const values=sheet.values||[];
+  const width=values.reduce((n,r)=>Math.max(n,r.length),Number(sheet.cols)||0);
+  return values.map(row=>Array.from({length:width},(_,c)=>row[c]??''));
+
 }
 async function writeFormulaCellsForImport(env,entries,accessToken,meta,titleReferences={}){
   const separator=formulaSeparator(meta),data=[];
+  let formulaCells=0;
   for(const {sheet,title} of entries){
+    let run=null, startRange='', previousColumn=-1, previousRow=0;
     for(const [cell,f] of Object.entries(sheet?.formulas||{})){
       if(!/^[A-Z]{1,3}[1-9][0-9]*$/i.test(cell))throw Object.assign(new Error(`Alamat rumus tidak valid: ${sheet.name}!${cell}`),{status:400});
       if(typeof f!=='string'||!f.startsWith('=')||/#REF!/i.test(f))
         throw Object.assign(new Error(`Rumus import tidak valid: ${sheet.name}!${cell}`),{status:400});
-      data.push({range:`${q(title)}!${cell}`,majorDimension:'ROWS',values:[[normalizeFormulaSeparators(remapFormula(f,titleReferences),separator)]]});
+      const [,letters,row]=cell.match(/^([a-z]+)(\d+)$/i);
+      const column=[...letters.toUpperCase()].reduce((n,c)=>n*26+c.charCodeAt(0)-64,0);
+      const value=normalizeFormulaSeparators(remapFormula(f,titleReferences),separator);
+      if(run && row===previousRow && column===previousColumn+1 && run.values[0].length<100){
+        run.values[0].push(value);
+        run.range=startRange+':'+cell;
+      }else{
+        startRange=`${q(title)}!${cell}`;
+        run={range:startRange,majorDimension:'ROWS',values:[[value]]};
+        data.push(run);
+      }
+      previousRow=row;previousColumn=column;formulaCells++;
     }
   }
   // Formula references can span different tabs. Write every tab's RAW values
@@ -273,7 +286,7 @@ async function writeFormulaCellsForImport(env,entries,accessToken,meta,titleRefe
   if(batch.length)batches.push(batch);
   for(const items of batches)await request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchUpdate`,
     {method:'POST',body:JSON.stringify({valueInputOption:'USER_ENTERED',data:items})},accessToken);
-  return {formulaCells:data.length,formulaBatches:batches.length};
+  return {formulaCells,formulaBatches:batches.length};
 }
 
 export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
@@ -316,8 +329,7 @@ export async function writeSheetsBatch(env, sheets, year = 2026, options = {}) {
 
   for (const x of targets) {
     const src = sheets[x.name] || {};
-    const prepared = rowsMatrix(src, separator, titleReferences);
-    const matrix = options.import ? rawValueMatrix(src,prepared) : prepared;
+    const matrix = options.import ? rawValueMatrix(src) : rowsMatrix(src, separator, titleReferences);
     if(options.import) formulaTargets.push({sheet:src,title:x.title});
     const rows = matrix.length;
     const cols = Math.max(Number(src?.cols) || 0, ...matrix.map(r => r.length), 1);
@@ -449,20 +461,9 @@ export async function readWorkbook(env, canonicalNames, year = 2026, period = 'a
 
   const ranges = resolved.map(x => {const p=currentSheets.find(s=>s.properties.title===x.actual).properties;return `${q(x.actual)}!A:${columnLetter(p.gridProperties.columnCount-1)}`;});
   const qs = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
-  const data = await request(
-    env,
-    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchGet?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE&${qs}`,
-    {},
-    accessToken
-  );
-  // Read formulas separately so round-tripping from Google Sheets back to the
-  // editor/Excel keeps existing workbook formulas instead of flattening them.
-  const formulaData = await request(
-    env,
-    `spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchGet?majorDimension=ROWS&valueRenderOption=FORMULA&${qs}`,
-    {},
-    accessToken
-  );
+  const [data,formulaData]=await Promise.all(['UNFORMATTED_VALUE','FORMULA'].map(option=>
+    request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchGet?majorDimension=ROWS&valueRenderOption=${option}&${qs}`,{},accessToken)
+  ));
 
   // Query a bounded formatting window: fetching effectiveFormat for every cell of
   // every 1000-row sheet caused heavy latency and huge serialized responses.
@@ -472,6 +473,7 @@ export async function readWorkbook(env, canonicalNames, year = 2026, period = 'a
   const display=await request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}?includeGridData=true&fields=sheets(properties(title),data(startRow,startColumn,columnMetadata(pixelSize),rowData(values(formattedValue,effectiveFormat(numberFormat)))))&${displayRanges.map(r=>'ranges='+encodeURIComponent(r)).join('&')}`,{},accessToken);
   const sheets = {};
   const formulaErrors = [];
+  const canonicalTitles=Object.fromEntries(resolved.map(x=>[x.actual,x.canonical]));
   for (let i = 0; i < resolved.length; i++) {
     const item = resolved[i];
     const values = data.valueRanges?.[i]?.values || [];
@@ -485,7 +487,7 @@ export async function readWorkbook(env, canonicalNames, year = 2026, period = 'a
       for (let c = 0; c < (rendered[r] || []).length; c++) {
         const v = rendered[r]?.[c];
         const a = cellAddress(r, c);
-        if (typeof v === 'string' && v.startsWith('=')) formulas[a] = normalizeFormulaSeparators(remapFormula(v,Object.fromEntries(resolved.map(x=>[x.actual,x.canonical]))), ',');
+        if (typeof v === 'string' && v.startsWith('=')) formulas[a] = normalizeFormulaSeparators(remapFormula(v,canonicalTitles), ',');
         const raw = values[r]?.[c];
         if (formulas[a] && typeof raw === 'string' && ['#ERROR!','#REF!','#NAME?'].includes(raw.trim().toUpperCase())) {
           formulaErrors.push({ canonical: item.canonical, cell: a, formula: v, value: raw });
