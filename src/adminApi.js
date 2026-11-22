@@ -63,16 +63,16 @@ export const saveCells = (changes, year, period='annual') =>
     body: JSON.stringify({ year, period, changes })
   });
 
-export const importSheet = (sheet, year, mode = 'replace', period='annual') =>
+export const importSheet = (sheet, year, mode = 'replace', period='annual', preserveFormat=true) =>
   apiJson('/api/admin/import-sheet', {
     method: 'POST',
-    body: JSON.stringify({ year, mode, period, sheets: [sheet] })
+    body: JSON.stringify({ year, mode, period, preserveFormat, sheets: [sheet] })
   });
 
-export const importSheets = (sheets, year, mode = 'replace', period='annual') =>
+export const importSheets = (sheets, year, mode = 'replace', period='annual', preserveFormat=true) =>
   apiJson('/api/admin/import-sheet', {
     method: 'POST',
-    body: JSON.stringify({ year, mode, period, sheets })
+    body: JSON.stringify({ year, mode, period, preserveFormat, sheets })
   });
 
 export const fetchRevision = (year) =>
