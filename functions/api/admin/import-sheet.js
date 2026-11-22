@@ -25,8 +25,8 @@ export async function onRequestPost({ request, env }) {
     // batches clear/write calls and splits large payloads to avoid the timeout
     // pattern that previously caused repeated 503 responses.
     const result = Object.keys(incoming).length === 1
-      ? await writeSingleSheet(env, Object.values(incoming)[0], year, { import: true, mode,period })
-      : await writeSheetsBatch(env, incoming, year, { import: true, mode,period });
+      ? await writeSingleSheet(env, Object.values(incoming)[0], year, { import: true, mode,period, preserveFormat:body?.preserveFormat!==false })
+      : await writeSheetsBatch(env, incoming, year, { import: true, mode,period, preserveFormat:body?.preserveFormat!==false });
 
     if (env.DB) {
       try {
@@ -36,12 +36,12 @@ export async function onRequestPost({ request, env }) {
          VALUES ('global', 1, ?)
          ON CONFLICT(id) DO UPDATE SET revision = revision_state.revision + 1, updated_at = excluded.updated_at`
       ).bind(now).run();
-      for (const sheetName of Object.keys(incoming)) {
-        await env.DB.prepare(
-          `INSERT INTO import_log (id, year, sheet_name, status, created_at)
-           VALUES (?, ?, ?, 'SUCCESS', ?)`
-        ).bind(crypto.randomUUID(), year, sheetName, now).run();
-      }
+      const logStatements=Object.keys(incoming).map(sheetName=>env.DB.prepare(
+        `INSERT INTO import_log (id, year, sheet_name, status, created_at)
+         VALUES (?, ?, ?, 'SUCCESS', ?)`
+      ).bind(crypto.randomUUID(), year, sheetName, now));
+      if(typeof env.DB.batch==='function' && logStatements.length>1) await env.DB.batch(logStatements);
+      else for(const statement of logStatements)await statement.run();
       } catch (auxError) {
         console.warn(JSON.stringify({event:'optional_d1_import_logging_failed',message:String(auxError?.message||'D1 unavailable').slice(0,180)}));
       }
@@ -64,12 +64,12 @@ export async function onRequestPost({ request, env }) {
         const names = Array.isArray(body?.sheets)
           ? body.sheets.map(s => String(s?.name || '')).filter(Boolean)
           : [String(body?.sheet?.name || '')].filter(Boolean);
-        for (const name of names) {
-          await env.DB.prepare(
-            `INSERT INTO import_log (id, year, sheet_name, status, created_at)
-             VALUES (?, ?, ?, 'FAILED', ?)`
-          ).bind(crypto.randomUUID(), Number(body?.year || env.DEFAULT_YEAR || 2026), name, now).run();
-        }
+        const logStatements=names.map(name=>env.DB.prepare(
+          `INSERT INTO import_log (id, year, sheet_name, status, created_at)
+           VALUES (?, ?, ?, 'FAILED', ?)`
+        ).bind(crypto.randomUUID(), Number(body?.year || env.DEFAULT_YEAR || 2026), name, now));
+        if(typeof env.DB.batch==='function'&&logStatements.length>1)await env.DB.batch(logStatements);
+        else for(const statement of logStatements)await statement.run();
       } catch {}
     }
     const error=classifyBackendError(e,'Import sheet gagal');
