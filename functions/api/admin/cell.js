@@ -1,6 +1,7 @@
 import { classifyBackendError } from '../../lib/errors.js';
 import { getCookie, json, verifySession } from '../../lib/security.js';
 import { writeCells, normalizePeriod } from '../../lib/sheets.js';
+import { publishRevision } from '../../lib/sync-revision.js';
 
 export async function onRequestPost({ request, env }) {
   if (!(await verifySession(env, getCookie(request, '__Host-kk_session')))) {
@@ -26,7 +27,8 @@ export async function onRequestPost({ request, env }) {
         console.warn(JSON.stringify({event:'optional_d1_revision_failed',source:'cell.js',message:String(auxError?.message||'D1 unavailable').slice(0,180)}));
       }
     }
-    return json({ ok: true, source: 'google-sheets', year, ...result });
+    const sync=await publishRevision(env,{year,period:normalizePeriod(body?.period),action:'cell',count:changes.length});
+    return json({ ok: true, source: 'google-sheets', year, sync, ...result });
   } catch (e) {
     const error=classifyBackendError(e,'Gagal menyimpan perubahan sel');
     console.error(JSON.stringify({event:'cell_save_failed',code:error.code,googleStatus:Number(e?.status||0),at:new Date().toISOString()}));

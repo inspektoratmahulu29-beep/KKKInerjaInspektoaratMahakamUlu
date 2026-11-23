@@ -17,7 +17,7 @@ export async function onRequestGet({request,env}) {
    const drive=await getDriveFileModifiedTime(env).then(x=>({available:true,canEdit:x.canEdit})).catch(()=>({available:false,canEdit:null}));
    const requiredSheets=['IKU','Rencana Aksi','Realisasi Fisik & Keu','Rekap realisasi PKPT'];
    const missingCore=requiredSheets.filter(n=>!titles.includes(n)&&!titles.includes(`2026__${n}`));
-   return json({ok:true,code:'GOOGLE_READ_OK',configured,...connectionIdentity,googleRead:'success',sheetCount:titles.length,missingCore,year:Number(env.DEFAULT_YEAR||2026),driveMetadata:drive,writeAccess:drive.canEdit===false?'denied':drive.canEdit===true?'likely':'not_verified',message:'Google Sheets dapat dibaca. Izin Editor perlu diuji dengan menyimpan satu sel yang aman; pembacaan tidak membuktikan akses tulis.'});
+   return json({ok:true,code:'GOOGLE_READ_OK',configured,...connectionIdentity,revisionMarkerPresent:titles.includes('_KK_SYNC'),googleRead:'success',sheetCount:titles.length,missingCore,year:Number(env.DEFAULT_YEAR||2026),driveMetadata:drive,writeAccess:drive.canEdit===false?'denied':drive.canEdit===true?'likely':'not_verified',message:'Google Sheets dapat dibaca. Izin Editor perlu diuji dengan menyimpan satu sel yang aman; pembacaan tidak membuktikan akses tulis.'});
  } catch(e) {
    const detail=classifyBackendError(e,'Gagal menguji koneksi Google Sheets');
    return json({ok:false,configured,...connectionIdentity,googleRead:'failed',...detail},detail.status);

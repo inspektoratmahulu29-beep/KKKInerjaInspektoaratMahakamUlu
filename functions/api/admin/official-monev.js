@@ -3,6 +3,7 @@ import { SEED_WORKBOOK } from '../../lib/seed.js';
 import { getSpreadsheet,resolveExistingTitle,writeSingleSheet } from '../../lib/sheets.js';
 import { OFFICIAL_REPORT_2026 } from '../../lib/report-schema.js';
 import { classifyBackendError } from '../../lib/errors.js';
+import { publishRevision } from '../../lib/sync-revision.js';
 
 export async function onRequestPost({request,env}) {
   if(!await verifySession(env,getCookie(request,'__Host-kk_session')))return json({ok:false,message:'Unauthorized'},401);
@@ -17,6 +18,7 @@ export async function onRequestPost({request,env}) {
     // Prevent a second, concurrent operator request from recreating a report.
     // Google Sheets will reject duplicate titles, and no existing report is overwritten.
     const result=await writeSingleSheet(env,source,2026,{import:true,createOnly:true,period:'annual'});
-    return json({ok:true,created:true,sheet:OFFICIAL_REPORT_2026,result,message:'Laporan resmi ditambahkan tanpa menimpa sheet lama.'});
+    const sync=await publishRevision(env,{year:2026,period:'annual',action:'official-report',count:1});
+    return json({ok:true,created:true,sheet:OFFICIAL_REPORT_2026,result,sync,message:'Laporan resmi ditambahkan tanpa menimpa sheet lama.'});
   }catch(e){const err=classifyBackendError(e,'Gagal menambahkan laporan Monev resmi');return json({ok:false,...err},err.status);}
 }

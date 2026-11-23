@@ -1,6 +1,7 @@
 import { classifyBackendError } from '../../lib/errors.js';
 import { getCookie, json, verifySession } from '../../lib/security.js';
 import { writeSingleSheet, writeSheetsBatch, normalizePeriod } from '../../lib/sheets.js';
+import { publishRevision } from '../../lib/sync-revision.js';
 
 export async function onRequestPost({ request, env }) {
   if (!(await verifySession(env, getCookie(request, '__Host-kk_session')))) {
@@ -47,8 +48,10 @@ export async function onRequestPost({ request, env }) {
       }
     }
 
+    const sync=await publishRevision(env,{year,period,action:'import',count:Object.keys(incoming).length});
     return json({
       ok: true,
+      sync,
       year,
       mode,
       sheetCount: Object.keys(incoming).length,

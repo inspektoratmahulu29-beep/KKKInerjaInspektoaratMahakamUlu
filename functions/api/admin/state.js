@@ -3,6 +3,7 @@ import { getCookie, json, verifySession } from '../../lib/security.js';
 import { readWorkbook, writeWorkbook, rewriteFormulaCells, normalizePeriod } from '../../lib/sheets.js';
 import { SEED_WORKBOOK } from '../../lib/seed.js';
 import { officialReportName } from '../../lib/report-schema.js';
+import { publishRevision } from '../../lib/sync-revision.js';
 
 const canonicalNames = ["IKU", "Rencana Aksi", "Capaian Sasaran Strategis", "Capaian Sasaran Program", "Capaian Sasaran Kegiatan Utama", "Capaian Sasaran Kegiatan(Penun)", "Capaian Sasaran SUBKegiatan(U)", "Capaian Sasaran SUBKegiatan (P)", "Monev Renaksi IKU", "Monev Program", "Monev output Subkegiatan Utama", "Monev Subkegiatan Penunjang", "Rekap realisasi PKPT", "Realisasi Fisik & Keu", "Laporan Monev Renaksi", "Rekap NON PKPT 2026", "ST Belum Klasifikasi", "Rekonsiliasi DPPA 2026", "Validasi Data 2026", "Dasar Indikator DPA 2026", "Jadwal PKPT dan Bukti 2026", "Register Bukti Capaian 2026", "Audit Isian 12 Sheet 2026", "Capaian Detail Penunjang 2026", "ST Perlu Pemetaan Okt 2026", "Ringkasan Anggaran PKPT Non", "Rincian Anggaran PKPT 2026", "TOTAL REKAP PKPT NON 2026"];
 const mandatoryNames=canonicalNames.filter(n=>n!=='Laporan Monev Renaksi');
@@ -74,7 +75,8 @@ export async function onRequestPut({ request, env }) {
       return json({ ok: false, message: 'Google Sheets belum dikonfigurasi di backend. Simpan lokal tidak diaktifkan pada mode aman ini.' }, 503);
     }
     await writeWorkbook(env, payload, Number(body?.year || payload?.meta?.year || 2026), normalizePeriod(body?.period));
-    return json({ ok: true, savedAt: new Date().toISOString(), source: 'google-sheets' });
+    const sync=await publishRevision(env,{year:Number(body?.year || payload?.meta?.year || 2026),period:normalizePeriod(body?.period),action:'workbook',count:Object.keys(payload.sheets).length});
+    return json({ ok: true, savedAt: new Date().toISOString(), source: 'google-sheets',sync });
   } catch (e) {
     const error=classifyBackendError(e,'Gagal menyimpan workbook');return json({ok:false,...error},error.status);
   }

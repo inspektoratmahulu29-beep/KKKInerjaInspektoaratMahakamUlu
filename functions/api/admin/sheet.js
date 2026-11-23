@@ -1,6 +1,7 @@
 import { classifyBackendError } from '../../lib/errors.js';
 import { getCookie, json, verifySession } from '../../lib/security.js';
 import { writeSingleSheet,normalizePeriod } from '../../lib/sheets.js';
+import { publishRevision } from '../../lib/sync-revision.js';
 
 export async function onRequestPut({ request, env }) {
   if (!(await verifySession(env, getCookie(request, '__Host-kk_session')))) {
@@ -25,7 +26,8 @@ export async function onRequestPut({ request, env }) {
         console.warn(JSON.stringify({event:'optional_d1_revision_failed',source:'sheet.js',message:String(auxError?.message||'D1 unavailable').slice(0,180)}));
       }
     }
-    return json({ ok: true, source: 'google-sheets', year, result }, 200);
+    const sync=await publishRevision(env,{year,period:normalizePeriod(body?.period),action:'sheet',count:1});
+    return json({ ok: true, source: 'google-sheets', year, result, sync }, 200);
   } catch (e) {
     const error=classifyBackendError(e,'Gagal menyimpan sheet');
     console.error(JSON.stringify({ event:'sheet_save_failed', code:error.code, googleStatus:Number(e?.status||0), at:new Date().toISOString() }));
