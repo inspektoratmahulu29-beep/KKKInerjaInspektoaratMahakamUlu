@@ -30,7 +30,21 @@ export async function onRequestGet({ request, env }) {
   const period=normalizePeriod(url.searchParams.get('period')||'annual');
   try {
     if (env.GOOGLE_SHEETS_SPREADSHEET_ID && env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-      let wb = await readWorkbook(env, [...mandatoryNames, officialReportName(year), 'Laporan Monev Renaksi'], year, period);
+      const sources=[...mandatoryNames, officialReportName(year), 'Laporan Monev Renaksi'];
+      let wb = await readWorkbook(env, sources, year, period);
+      // Repair the ONE known Excel-locale bug after an authenticated editor
+      // opens the period. Never overwrite an unrelated/user-modified formula.
+      const decimalError=(wb.formulaErrors||[]).filter(item=>
+        item.canonical==='Validasi Data 2026' && item.cell==='D9' &&
+        /^=\s*41[.,]38\s*\/\s*100\s*$/.test(String(item.formula||'')) &&
+        String(item.value||'').trim().toUpperCase()==='#ERROR!');
+      if(decimalError.length){
+        try {
+          await rewriteFormulaCells(env,[{canonical:'Validasi Data 2026',cell:'D9',formula:'=4138/10000',year,period}]);
+          await publishRevision(env,{year,period,action:'repair-formula-locale',count:1});
+          wb=await readWorkbook(env,sources,year,period);
+        }catch(error){console.error(JSON.stringify({event:'locale_formula_auto_repair_failed',year,period,code:error?.status||'UNKNOWN'}));}
+      }
       if (Object.keys(wb.sheets).length) {
         return json({
           ok: true,
