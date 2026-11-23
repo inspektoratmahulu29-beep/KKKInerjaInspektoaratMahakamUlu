@@ -304,3 +304,7 @@
 @media(max-width:800px){.year-missing-banner{flex-direction:column;align-items:stretch}.year-missing-banner button{white-space:normal}}
 
 .integrated-editor-shortcut{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin:0 0 16px;padding:14px 17px;border:1px solid #8bd9b54a;border-radius:14px;background:linear-gradient(110deg,#163b3ab5,#153e48aa);color:#d7f5e6;font-size:12px}.integrated-editor-shortcut button{background:#225f55;color:#effff3}
+
+/* 2026 integrated KPI cards: keep the full 28-sheet section within the master dashboard. */
+.dashboard-page .mi-panel { margin: 20px 0 24px; }
+.dashboard-page .mi-head h2 { line-height: 1.2; }

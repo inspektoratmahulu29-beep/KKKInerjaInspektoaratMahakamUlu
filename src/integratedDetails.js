@@ -40,6 +40,40 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
   const unclassified=list(get('ST Belum Klasifikasi'),5).map(r=>({number:pick(r,1),month:pick(r,3),activity:pick(r,4),note:pick(r,10)}));
   const unmapped=list(get('ST Perlu Pemetaan Okt 2026'),4).map(r=>({number:pick(r,2),date:pick(r,3),class:pick(r,4),activity:pick(r,5),issue:pick(r,6)}));
   const nonPkptRows=list(get('Rekap NON PKPT 2026'),5);
+  // Public projection intentionally omits employee, travel-order number and other identity fields.
+  // Administrative status is not evidence of a verified audit output.
+  const nonPkpt=nonPkptRows.map((r,index)=>({
+    index:index+1,month:pick(r,3),activity:pick(r,4),object:pick(r,8),
+    funding:pick(r,9),tripType:pick(r,11),location:pick(r,12),days:amount(r,13),
+    outputType:pick(r,14),target:amount(r,15),status:pick(r,16)
+  }));
+  // Match only identical normalized funding names. Do not use fuzzy similarity to assign public budgets.
+  // Repeated subactivity budgets are context for each ST, never an additional ST expense.
+  const byFundingName=new Map(summary.filter(x=>x.name).map(x=>[prettyName(x.name).toLowerCase(),x]));
+  let nonPkptMappedCount=0;
+  for(const st of nonPkpt){
+    const row=byFundingName.get(prettyName(st.funding).toLowerCase());
+    if(!row)continue;
+    st.fundingMapped=true;st.fundingCode=row.code;st.fundingBudget=row.budget;
+    st.fundingFinancial=row.financial;st.fundingRemaining=row.remaining;
+    nonPkptMappedCount++;
+  }
+  const monthSummary=[...new Set(nonPkpt.map(r=>r.month).filter(Boolean))].map(month=>({
+    month,count:nonPkpt.filter(r=>r.month===month).length,
+    verified:nonPkpt.filter(r=>r.month===month&&/terverifikasi/i.test(r.status)).length
+  }));
+  const fundingSummary=[...new Set(nonPkpt.map(r=>r.funding).filter(Boolean))].map(name=>({
+    name,count:nonPkpt.filter(r=>r.funding===name).length
+  })).sort((a,b)=>b.count-a.count);
+  const dppaRows=list(get('Rekonsiliasi DPPA 2026'),5).map(r=>({
+    name:pick(r,1),dpa:amount(r,2),october:amount(r,3),difference:amount(r,4),
+    financial:amount(r,5),absorption:amount(r,6),source:pick(r,7),state:pick(r,8)
+  }));
+  const dppaDifference=dppaRows.reduce((n,r)=>n+(Number(r.difference)||0),0);
+  const dppaDifferences=dppaRows.filter(r=>r.difference!=null&&Math.abs(r.difference)>.01);
+  const scheduling=list(get('Jadwal PKPT dan Bukti 2026'),4);
+  const nonPkptSourceAvailable=!!get('Rekap NON PKPT 2026')&&nonPkptRows.length>0;
+  const agendaSourceAvailable=!!get('Rincian Anggaran PKPT 2026')&&agenda.length>0;
   const validationSource=align(get('Validasi Data 2026'));
   const fisikRekap=val(validationSource[7]?.[3]),fisikSmpeq=val(validationSource[8]?.[3]);
   const physicalComparison={rekap:fisikRekap,smpeq:fisikSmpeq,differencePoints:fisikRekap!=null&&fisikSmpeq!=null?Math.round((fisikRekap-fisikSmpeq)*10000)/100:null};
@@ -54,7 +88,9 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
   return {available:!!(summary.length||agenda.length||hasUnique||sheetList.some(x=>x.available)),period:pick(totals[2],0)||'',
     financialAuthority:hasUnique?'TOTAL REKAP PKPT NON 2026!A8:I8':null,
     unique,groups,subkegiatan:summary,agenda,dpa,evidence,unclassified,unmapped,
-    nonPkptCount:nonPkptRows.length,validation,physicalComparison,sheetList,
+    nonPkptCount:nonPkptRows.length,nonPkpt,nonPkptSourceAvailable,nonPkptMappedCount,monthSummary,fundingSummary,agendaSourceAvailable,
+    dppaRows,dppaDifference,dppaDifferences,dppaSourceAvailable:!!get('Rekonsiliasi DPPA 2026'),
+    scheduleCount:scheduling.length,validation,physicalComparison,sheetList,
     cautions:[
       'Nilai pada kelompok TERKAIT PKPT, NON-PKPT, dan DIPAKAI BERSAMA adalah kelompok beririsan. Jangan menjumlahkannya sebagai pagu total.',
       'Pagu rencana agenda PKPT berbeda dari pagu DPA/subkegiatan dan realisasi keuangan. Realisasi subkegiatan dapat berulang pada lebih dari satu agenda.',
