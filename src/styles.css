@@ -302,3 +302,5 @@
 .year-missing-banner strong{display:block;font-size:14px}.year-missing-banner p{margin:6px 0;color:#e8d9b2;font-size:12px;line-height:1.7}.year-missing-banner small{display:block;font-size:10px;line-height:1.7;color:#bfad8a;overflow-wrap:anywhere}
 .year-missing-banner button{white-space:nowrap;flex:none}.year-missing-banner button:disabled{opacity:.55}
 @media(max-width:800px){.year-missing-banner{flex-direction:column;align-items:stretch}.year-missing-banner button{white-space:normal}}
+
+.integrated-editor-shortcut{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin:0 0 16px;padding:14px 17px;border:1px solid #8bd9b54a;border-radius:14px;background:linear-gradient(110deg,#163b3ab5,#153e48aa);color:#d7f5e6;font-size:12px}.integrated-editor-shortcut button{background:#225f55;color:#effff3}
