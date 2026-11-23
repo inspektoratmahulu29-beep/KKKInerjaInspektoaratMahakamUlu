@@ -12,7 +12,9 @@ const val=x=>{
 const align=sheet=>{
   const arr=sheet?.values||sheet||[];if(!Array.isArray(arr))return [];
   const columns=sheet?.schemaColumns;if(!Array.isArray(columns)||!columns.length)return arr;
-  return arr.map(row=>{const out=[];for(const c of columns)out[c.original]=row[c.current];return out;});
+  // Preserve unmapped new columns, including SPJ evidence to the right of AA.
+  // Explicit schema maps take precedence when the user inserts/moves columns.
+  return arr.map(row=>{const out=[],mapped=new Set();for(const c of columns){out[c.original]=row[c.current];mapped.add(c.current);}const max=out.length;for(let i=max;i<row.length;i++)if(!mapped.has(i))out[i]=row[i];return out;});
 };
 const pick=(s,i)=>txt(s?.[i]);
 const amount=(s,i)=>val(s?.[i]);
@@ -68,7 +70,7 @@ const sheetGroups={
  'IKU':'Perencanaan & IKU','Rencana Aksi':'Perencanaan & IKU',
  'Capaian Sasaran Strategis':'Capaian Kinerja','Capaian Sasaran Program':'Capaian Kinerja','Capaian Sasaran Kegiatan Utama':'Capaian Kinerja','Capaian Sasaran Kegiatan(Penun)':'Capaian Kinerja','Capaian Sasaran SUBKegiatan(U)':'Capaian Kinerja','Capaian Sasaran SUBKegiatan (P)':'Capaian Kinerja','Capaian Detail Penunjang 2026':'Capaian Kinerja',
  'Monev Renaksi IKU':'Monev & Bukti','Monev Program':'Monev & Bukti','Monev output Subkegiatan Utama':'Monev & Bukti','Monev Subkegiatan Penunjang':'Monev & Bukti','Register Bukti Capaian 2026':'Monev & Bukti','Audit Isian 12 Sheet 2026':'Monev & Bukti','Validasi Data 2026':'Monev & Bukti','Dasar Indikator DPA 2026':'Monev & Bukti',
- 'Rekap realisasi PKPT':'Pelaksanaan & Penugasan','Rekap NON PKPT 2026':'Pelaksanaan & Penugasan','ST Belum Klasifikasi':'Pelaksanaan & Penugasan','ST Perlu Pemetaan Okt 2026':'Pelaksanaan & Penugasan','Jadwal PKPT dan Bukti 2026':'Pelaksanaan & Penugasan','PKPT 76 Penugasan 2026':'Pelaksanaan & Penugasan','Rincian Anggaran PKPT 2026':'Pelaksanaan & Penugasan',
+ 'Rekap realisasi PKPT':'Pelaksanaan & Penugasan','Rekap NON PKPT 2026':'Pelaksanaan & Penugasan','ST Belum Klasifikasi':'Pelaksanaan & Penugasan','ST Perlu Pemetaan Okt 2026':'Pelaksanaan & Penugasan','Jadwal PKPT dan Bukti 2026':'Pelaksanaan & Penugasan','Rincian Anggaran PKPT 2026':'Pelaksanaan & Penugasan',
  'Realisasi Fisik & Keu':'Anggaran & Rekonsiliasi','Rekonsiliasi DPPA 2026':'Anggaran & Rekonsiliasi','Ringkasan Anggaran PKPT Non':'Anggaran & Rekonsiliasi','TOTAL REKAP PKPT NON 2026':'Anggaran & Rekonsiliasi'};
 const errorPattern=/^#(?:REF!|ERROR!|VALUE!|DIV\/0!|N\/A|NAME\?|NUM!|NULL!)$/i;
 export function buildIntegratedDetails(sheets,requestedNames=[]){
@@ -86,27 +88,43 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
   // dan 56 PAKET biaya dalam rincian anggaran. Jumlah paket tidak boleh menjadi KPI agenda.
   const budgetPackages=list(get('Rincian Anggaran PKPT 2026'),4).map(r=>({id:amount(r,0),name:pick(r,1),irban:pick(r,2),subkegiatan:pick(r,3),code:pick(r,4),start:pick(r,5),report:pick(r,6),outputTarget:amount(r,7),planned:amount(r,8)}));
   const pkptPackageBudgetTotal=budgetPackages.length?budgetPackages.reduce((n,r)=>n+(r.planned||0),0):null;
-  const source76=list(get('PKPT 76 Penugasan 2026'),4,r=>isIndex(r)&&!!pick(r,1));
+  // REKAP REALISASI PKPT adalah SATU-SATUNYA basis 76 penugasan.
+  // Kolom AB:AW menyimpan pemetaan biaya dan pembuktian SPJ pada sheet yang sama.
+  // Rincian Anggaran PKPT tetap memiliki 56 paket biaya; paket bukan penugasan.
   const recap76=align(get('Rekap realisasi PKPT')).slice(6).map((cells,i)=>({cells,row:i+7})).filter(x=>!!pick(x.cells,3)&&!!pick(x.cells,8));
-  // Jika workbook lama belum memuat sheet rekonsiliasi, angka PKPT tetap
-  // ditarik dari 76 baris rekap; detail paket yang belum terverifikasi dibiarkan kosong.
-  const agenda=source76.length ? source76.map(r=>({
-    id:amount(r,0),name:pick(r,1),jenis:pick(r,2),irban:pick(r,3),status:pick(r,4),
-    program:pick(r,5),kegiatan:pick(r,6),subkegiatan:pick(r,7),code:pick(r,8),pptk:pick(r,9),
-    start:pick(r,10),report:pick(r,11),outputTarget:amount(r,12),targetUnit:pick(r,13),
-    packageId:amount(r,14),planned:amount(r,15),recapPlan:amount(r,16),
-    subBudget:amount(r,17),subFinancial:amount(r,18),subRemaining:amount(r,19),subAbsorption:amount(r,20),
-    recapRow:amount(r,21),packageStatus:pick(r,22),notes:pick(r,23)
-  })) : recap76.map(({cells:r,row},index)=>({
-    id:index+1,name:pick(r,3),jenis:pick(r,7),irban:pick(r,5),status:pick(r,4),
-    subkegiatan:pick(r,8),code:pick(r,26),outputTarget:amount(r,9),targetUnit:pick(r,10),
-    recapPlan:amount(r,18),planned:null,recapRow:row,
-    packageStatus:'Paket belum direkonsiliasi',notes:'Impor workbook PKPT 76 Penugasan 2026 untuk hubungan paket dan penugasan yang terverifikasi.'
-  }));
-  const pkptUnmatchedCount=source76.length ? agenda.filter(x=>x.packageId==null).length : null;
-  const pkptTentativeCount=source76.length ? agenda.filter(x=>/indikatif/i.test(x.packageStatus)).length : null;
-  const pkptOrphanPackageIds=source76.length ? budgetPackages.filter(x=>!agenda.some(a=>a.packageId===x.id)).map(x=>x.id) : [];
-  const pkptOrphanBudget=source76.length ? budgetPackages.filter(x=>pkptOrphanPackageIds.includes(x.id)).reduce((sum,x)=>sum+(x.planned||0),0) : null;
+  const rekapHeaders=align(get('Rekap realisasi PKPT'))[3]||[];
+  const pkptSourceCorrected=/no\.?\s*paket/i.test(pick(rekapHeaders,27)) && /rekonsiliasi/i.test(pick(rekapHeaders,48));
+  const agenda=recap76.map(({cells:r,row},index)=>{
+    const pkgId=amount(r,27),pkg=budgetPackages.find(b=>b.id===pkgId);
+    const noSpj=pick(r,38),tanggalSpj=pick(r,39),buktiSpj=pick(r,40),pemeriksa=pick(r,41),hasilVerifikasi=pick(r,42);
+    const spj=amount(r,24);
+    const proofComplete=Boolean(noSpj&&tanggalSpj&&buktiSpj&&spj!=null&&hasilVerifikasi==='Sesuai');
+    const proofStatus=proofComplete?'Terverifikasi':
+      hasilVerifikasi==='Tidak sesuai'?'Tidak sesuai':
+      (!noSpj&&!tanggalSpj&&!buktiSpj&&spj==null)?'Belum ada bukti SPJ':'Belum terverifikasi';
+    return {
+      id:index+1,name:pick(r,3),jenis:pick(r,7),irban:pick(r,5),status:pick(r,4),
+      program:pick(r,29),kegiatan:pick(r,30),pptk:pick(r,31),
+      subkegiatan:pick(r,8),code:pick(r,26),start:pick(r,35),report:pick(r,36),
+      outputTarget:amount(r,9),targetUnit:pick(r,10),
+      packageId:pkgId,packageName:pick(r,28)||pkg?.name||'',
+      packageBudget:amount(r,32)??pkg?.planned??null,planned:amount(r,33),
+      recapPlan:amount(r,18),subDpa:amount(r,19),subBudget:amount(r,20),
+      subFinancial:amount(r,21),subRemaining:amount(r,22),subAbsorption:amount(r,23),
+      spj,spjNo:noSpj,spjDate:tanggalSpj,spjProof:buktiSpj,verifier:pemeriksa,verification:hasilVerifikasi,
+      proofStatus,verifiedSpj:proofComplete?spj:null,
+      taskOrder:pick(r,37),outputProof:pick(r,45),spjNotes:pick(r,46),
+      recapRow:row,packageStatus:pick(r,34)||'Paket belum dicocokkan',
+      notes:pick(r,48)||'Hubungan paket belum direkonsiliasi',mappingSource:pick(r,47)
+    };
+  });
+  const pkptUnmatchedCount=pkptSourceCorrected?agenda.filter(x=>x.packageId==null).length:null;
+  const pkptTentativeCount=pkptSourceCorrected?agenda.filter(x=>/perlu konfirmasi|indikatif/i.test(x.packageStatus)).length:null;
+  const pkptOrphanPackageIds=pkptSourceCorrected?budgetPackages.filter(x=>!agenda.some(a=>a.packageId===x.id)).map(x=>x.id):[];
+  const pkptOrphanBudget=pkptSourceCorrected?budgetPackages.filter(x=>pkptOrphanPackageIds.includes(x.id)).reduce((sum,x)=>sum+(x.planned||0),0):null;
+  const pkptSpjEvidenceMissing=agenda.filter(x=>x.proofStatus==='Belum ada bukti SPJ').length;
+  const pkptSpjVerifiedCount=agenda.filter(x=>x.proofStatus==='Terverifikasi').length;
+  const pkptSpjVerifiedAmount=agenda.reduce((sum,x)=>sum+(x.verifiedSpj||0),0);
   for(const item of agenda){const sub=bySubCode.get(item.code)||summary.find(x=>nameKey(x.name)===nameKey(item.subkegiatan));if(sub){item.program=item.program||sub.program||'';item.kegiatan=item.kegiatan||sub.kegiatan||'';item.pptk=item.pptk||sub.pptk||'';item.fundingMapped=true;}else{const directory=activityDirectory.get(nameKey(item.subkegiatan))||{};item.program=item.program||directory.program||'';item.kegiatan=item.kegiatan||directory.kegiatan||'';item.pptk=item.pptk||directory.pptk||'';item.fundingMapped=false;}}
   const dpa=list(get('Dasar Indikator DPA 2026'),4,r=>/^\d+(?:\.\d+)+$/.test(pick(r,1))).map(r=>({code:pick(r,1),name:pick(r,2),indicator:pick(r,3),target:pick(r,4),unit:pick(r,5),budget:amount(r,6),financial:amount(r,7),absorption:amount(r,8),pkptST:amount(r,9)||0,nonPkptST:amount(r,10)||0}));
   const evidence=list(get('Register Bukti Capaian 2026'),4).map(r=>({type:pick(r,1),subkegiatan:pick(r,2),document:pick(r,3),date:pick(r,4),object:pick(r,5),output:pick(r,6),status:pick(r,7),impact:pick(r,8),source:pick(r,9)}));
@@ -152,7 +170,7 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
         absorption:sub?.absorption??null,rows:[],executionRows:[],planTotal:null,planCount:0,claimTotal:null,claimCount:0};
       pkptFundingGroups.push(group);
     }
-    if(!source76.length)group.executionRows.push(job);
+    if(!pkptSourceCorrected)group.executionRows.push(job);
   }
 
   const monthSummary=[...new Set(nonPkpt.map(r=>r.month).filter(Boolean))].map(month=>({
@@ -170,7 +188,7 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
   const dppaDifferences=dppaRows.filter(r=>r.difference!=null&&Math.abs(r.difference)>.01);
   const scheduling=list(get('Jadwal PKPT dan Bukti 2026'),4);
   const nonPkptSourceAvailable=!!get('Rekap NON PKPT 2026')&&nonPkptRows.length>0;
-  const agendaSourceAvailable=(!!get('PKPT 76 Penugasan 2026')||!!get('Rekap realisasi PKPT'))&&agenda.length>0;
+  const agendaSourceAvailable=!!get('Rekap realisasi PKPT')&&agenda.length>0;
   const validationSource=align(get('Validasi Data 2026'));
   const fisikRekap=val(validationSource[7]?.[3]),fisikSmpeq=val(validationSource[8]?.[3]);
   const physicalComparison={rekap:fisikRekap,smpeq:fisikSmpeq,differencePoints:fisikRekap!=null&&fisikSmpeq!=null?Math.round((fisikRekap-fisikSmpeq)*10000)/100:null};
@@ -184,7 +202,7 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
   const hasUnique=!!unique;
   return {available:!!(summary.length||agenda.length||hasUnique||sheetList.some(x=>x.available)),period:pick(totals[2],0)||'',
     financialAuthority:hasUnique?'TOTAL REKAP PKPT NON 2026!A8:I8':null,
-    unique,groups,subkegiatan:summary,agenda,budgetPackages,pkptPackageBudgetTotal,pkptUnmatchedCount,pkptTentativeCount,pkptOrphanPackageIds,pkptOrphanBudget,pkptSourceCorrected:source76.length>0,pkptExecution,pkptFundingGroups,nonPkptFundingGroups,dpa,evidence,unclassified,unmapped,
+    unique,groups,subkegiatan:summary,agenda,budgetPackages,pkptPackageBudgetTotal,pkptUnmatchedCount,pkptTentativeCount,pkptOrphanPackageIds,pkptOrphanBudget,pkptSourceCorrected,pkptSpjEvidenceMissing,pkptSpjVerifiedCount,pkptSpjVerifiedAmount,pkptExecution,pkptFundingGroups,nonPkptFundingGroups,dpa,evidence,unclassified,unmapped,
     nonPkptCount:nonPkptRows.length,nonPkpt,nonPkptSourceAvailable,nonPkptMappedCount,monthSummary,fundingSummary,agendaSourceAvailable,
     dppaRows,dppaDifference,dppaDifferences,dppaSourceAvailable:!!get('Rekonsiliasi DPPA 2026'),
     scheduleCount:scheduling.length,validation,physicalComparison,sheetList,

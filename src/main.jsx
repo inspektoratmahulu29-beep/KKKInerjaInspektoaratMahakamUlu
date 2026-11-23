@@ -26,7 +26,7 @@ const INITIAL_PERIOD=PERIOD_OPTIONS.some(p=>p.value===queryPeriod)?queryPeriod:'
 const REQUIRED_DASHBOARD_SHEETS=['IKU','Rencana Aksi','Capaian Sasaran Strategis','Capaian Sasaran Program','Capaian Sasaran Kegiatan Utama','Capaian Sasaran Kegiatan(Penun)','Capaian Sasaran SUBKegiatan(U)','Capaian Sasaran SUBKegiatan (P)','Monev Renaksi IKU','Monev Program','Monev output Subkegiatan Utama','Monev Subkegiatan Penunjang','Rekap realisasi PKPT','Realisasi Fisik & Keu'];
 
 // Tiga belas sheet pelengkap Excel terbaru; laporan resmi bersifat dinamis menurut tahun.
-const ADDITIONAL_DASHBOARD_SHEETS = ["Rekap NON PKPT 2026", "ST Belum Klasifikasi", "Rekonsiliasi DPPA 2026", "Validasi Data 2026", "Dasar Indikator DPA 2026", "Jadwal PKPT dan Bukti 2026", "Register Bukti Capaian 2026", "Audit Isian 12 Sheet 2026", "Capaian Detail Penunjang 2026", "ST Perlu Pemetaan Okt 2026", "Ringkasan Anggaran PKPT Non", "Rincian Anggaran PKPT 2026", "PKPT 76 Penugasan 2026", "TOTAL REKAP PKPT NON 2026"];
+const ADDITIONAL_DASHBOARD_SHEETS = ["Rekap NON PKPT 2026", "ST Belum Klasifikasi", "Rekonsiliasi DPPA 2026", "Validasi Data 2026", "Dasar Indikator DPA 2026", "Jadwal PKPT dan Bukti 2026", "Register Bukti Capaian 2026", "Audit Isian 12 Sheet 2026", "Capaian Detail Penunjang 2026", "ST Perlu Pemetaan Okt 2026", "Ringkasan Anggaran PKPT Non", "Rincian Anggaran PKPT 2026", "TOTAL REKAP PKPT NON 2026"];
 const expectedSourceSheets=year=>[...REQUIRED_DASHBOARD_SHEETS,...ADDITIONAL_DASHBOARD_SHEETS,officialReportName(year)];
 const IMPORT_AUDIT_KEY = `${STORAGE_KEY}:importAudit`;
 const IMPORT_BACKUP_KEY = `${STORAGE_KEY}:importBackup`;
@@ -125,7 +125,6 @@ const sheetMeta = {
   'ST Perlu Pemetaan Okt 2026': {group:'Penugasan & Surat Tugas',role:'Surat Tugas belum dapat dipetakan terhadap kode subkegiatan',dataStart:4},
   'Ringkasan Anggaran PKPT Non': {group:'Rekonsiliasi Anggaran',role:'Pagu dan realisasi setiap subkegiatan tanpa penghitungan ganda',dataStart:4},
   'Rincian Anggaran PKPT 2026': {group:'PKPT & Pengawasan',role:'56 paket rencana biaya PKPT yang dapat dipakai bersama beberapa penugasan',dataStart:4},
-  'PKPT 76 Penugasan 2026': {group:'PKPT & Pengawasan',role:'76 penugasan PKPT dengan pemetaan 56 paket biaya, program, PPTK, dan status',dataStart:4},
   'TOTAL REKAP PKPT NON 2026': {group:'Rekonsiliasi Anggaran',role:'Rekap pagu, realisasi, dan pembiayaan PKPT–Non-PKPT yang beririsan',dataStart:7}
 };
 
@@ -143,9 +142,8 @@ const knownSheetRanges = {
   "ST Perlu Pemetaan Okt 2026":'A1:G22',
   "Ringkasan Anggaran PKPT Non":'A1:M36',
   "Rincian Anggaran PKPT 2026":'A1:P62',
-  "PKPT 76 Penugasan 2026":'A1:X89',
   "TOTAL REKAP PKPT NON 2026":'A1:I36',
-  'IKU':'A1:Q18','Rencana Aksi':'A1:M37','Capaian Sasaran Strategis':'A1:K16','Capaian Sasaran Program':'A1:L13','Capaian Sasaran Kegiatan Utama':'A1:M8','Capaian Sasaran Kegiatan(Penun)':'A1:N12','Capaian Sasaran SUBKegiatan(U)':'A1:N17','Capaian Sasaran SUBKegiatan (P)':'A1:O23','Monev Renaksi IKU':'A1:R34','Monev Program':'A1:X36','Monev output Subkegiatan Utama':'A1:N60','Monev Subkegiatan Penunjang':'A1:M31','Rekap realisasi PKPT':'A1:AA111','Realisasi Fisik & Keu':'A1:K64',[OFFICIAL_REPORT_2026]:'A1:X22'
+  'IKU':'A1:Q18','Rencana Aksi':'A1:M37','Capaian Sasaran Strategis':'A1:K16','Capaian Sasaran Program':'A1:L13','Capaian Sasaran Kegiatan Utama':'A1:M8','Capaian Sasaran Kegiatan(Penun)':'A1:N12','Capaian Sasaran SUBKegiatan(U)':'A1:N17','Capaian Sasaran SUBKegiatan (P)':'A1:O23','Monev Renaksi IKU':'A1:R34','Monev Program':'A1:X36','Monev output Subkegiatan Utama':'A1:N60','Monev Subkegiatan Penunjang':'A1:M31','Rekap realisasi PKPT':'A1:AW212','Realisasi Fisik & Keu':'A1:K64',[OFFICIAL_REPORT_2026]:'A1:X22'
 };
 const formulaSpecs = {
   'IKU': { inputs: ['A:L'], computed: [], note: 'Indikator kinerja utama dan target tahunan merupakan input sumber.' },
@@ -160,7 +158,7 @@ const formulaSpecs = {
   'Monev Program': { inputs: ['H:K','L:O','R:S'], computed: ['Virtual % per TW','% Realisasi Anggaran'], note: 'Capaian TW dan % anggaran dihitung untuk monitoring tanpa menimpa input.' },
   'Monev output Subkegiatan Utama': { inputs: ['H','J','K','L','M','N'], computed: ['Virtual output count'], note: 'Aktivitas, pelaksana, dasar penugasan, jumlah output, kendala, dan solusi merupakan input; jumlah output dipakai otomatis untuk KPI.' },
   'Monev Subkegiatan Penunjang': { inputs: ['H','I','J','K','L','M'], computed: ['Virtual output count'], note: 'Aktivitas, pengampu, PPTK, jumlah output, kendala, dan solusi merupakan input; jumlah output dipakai otomatis untuk KPI.' },
-  'Rekap realisasi PKPT': { inputs: ['D:E','J:L'], computed: ['Virtual % penyelesaian'], note: 'Progress penugasan = realisasi ÷ target × 100 saat angka tersedia.' },
+  'Rekap realisasi PKPT': { inputs: ['D:E','J:L','Y','AL:AQ','AT:AU'], computed: ['AR:AS','Virtual % penyelesaian'], note: 'Rekap 76 penugasan: AB:AK pemetaan paket; Y adalah SPJ penugasan; AL:AQ input identitas dan bukti SPJ; AR:AS status/nilai terverifikasi otomatis.' },
   'Realisasi Fisik & Keu': { inputs: ['C','K'], computed: ['D','E','F','H','I','J'], note: 'C anggaran dan K permasalahan dapat diedit. E realisasi fisik dihitung otomatis dari H sesuai rumus template (I/D x 100 secara aljabar = H). G realisasi keuangan adalah nilai sumber/hasil import pada detail; G pada baris program dan total dijumlahkan otomatis. D/F/H/I/J dihitung otomatis.' },
   [OFFICIAL_REPORT_2026]: { inputs: ['F:M','O:X'], computed: [], note: 'Sheet laporan resmi sumber Excel 2026, tanpa rumus tambahan. Kolom U (realisasi) kosong dalam file sumber; isi aktual ketika tersedia. Jangan samakan data kosong dengan nol.' },
   [MONEV_REPORT_SHEET]: { inputs: ['C:F pada tabel bulanan'], computed: ['KPI per TW','Serapan bulanan','Rekap TW'], note: 'KPI per TW diselaraskan dari Monev Renaksi IKU. Target/realisasi fisik dan keuangan diinput per bulan; serapan dan rekap TW dihitung otomatis.' }
