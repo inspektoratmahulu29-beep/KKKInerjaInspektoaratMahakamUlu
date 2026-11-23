@@ -40,7 +40,7 @@ function isApprovedRange(input){
   const allowed=allowedSources.has(base)||/^Laporan_Monev_Renaksi_20\d{2}$/.test(base);
   return allowed && (prefix || base===name); // legacy titles for 2026 remain supported
 }
-export async function onRequestPost({request,env}){
+export async function onRequestPost({request,env,context}){
   const secret=String(env.SIKAP_SYNC_SECRET||'');
   const provided=String(request.headers.get('x-sikap-sync-key')||'');
   if(secret.length<32 || provided.length<32 || provided.length>1024 || !(await boundedEqual(secret,provided)))
@@ -57,6 +57,17 @@ export async function onRequestPost({request,env}){
   if(!['metadata','values','revision'].includes(operation))return reply({ok:false,code:'INVALID_OPERATION'},400);
   if(operation==='values'&&(!Array.isArray(body.ranges)||body.ranges.length<1||body.ranges.length>24||body.ranges.some(r=>typeof r!=='string'||r.length>180||!isApprovedRange(r))))
     return reply({ok:false,code:'INVALID_RANGES'},400);
+  // The revision poll is frequent, but must not multiply Google reads for
+  // every public visitor. A two-second, authenticated edge cache bounds load.
+  const edgeCache=operation==='revision'?globalThis.caches?.default:null;
+  let revisionCacheKey=null;
+  if(edgeCache){
+    const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(env.GOOGLE_SHEETS_SPREADSHEET_ID)));
+    const sid=Array.from(new Uint8Array(bytes)).slice(0,10).map(b=>b.toString(16).padStart(2,'0')).join('');
+    revisionCacheKey=new Request(`${new URL(request.url).origin}/__internal/kkk-revision-cache/${sid}`);
+    const cached=await edgeCache.match(revisionCacheKey).catch(()=>null);
+    if(cached){try{return reply(await cached.json());}catch{/* Refresh cache. */}}
+  }
   try{
     const token=await getGoogleAccessToken(env);
     const id=encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID);
@@ -68,7 +79,12 @@ export async function onRequestPost({request,env}){
       try{
         const rev=await sheetsRequest(env,`spreadsheets/${id}/values/'_KK_SYNC'!A1:F2?valueRenderOption=UNFORMATTED_VALUE`,{noRetry:true},token);
         const row=rev.values?.[1]||[];
-        return reply({ok:true,markerAvailable:Boolean(row[0]),revision:String(row[0]||'')||null,updatedAt:row[1]||null,year:Number(row[2])||null,period:String(row[3]||'annual'),action:String(row[4]||''),count:Number(row[5])||0});
+        const marker={ok:true,markerAvailable:Boolean(row[0]),revision:String(row[0]||'')||null,updatedAt:row[1]||null,year:Number(row[2])||null,period:String(row[3]||'annual'),action:String(row[4]||''),count:Number(row[5])||0};
+        if(edgeCache&&revisionCacheKey){
+          const task=edgeCache.put(revisionCacheKey,new Response(JSON.stringify(marker),{headers:{'content-type':'application/json','cache-control':'public,max-age=2'}})).catch(()=>{});
+          if(context?.waitUntil)context.waitUntil(task);else await task;
+        }
+        return reply(marker);
       }catch(error){
         if(Number(error.status)===400 && /unable to parse range|cannot find range|sheet.*not found|range/i.test(String(error.message)))
           return reply({ok:true,markerAvailable:false,revision:null,reason:'MASTER_REVISION_NOT_INITIALIZED'});
@@ -82,6 +98,6 @@ export async function onRequestPost({request,env}){
   }catch(error){
     const code=Number(error?.status)===403?'MASTER_GOOGLE_ACCESS_DENIED':Number(error?.status)===429?'MASTER_GOOGLE_RATE_LIMITED':Number(error?.status)===404?'MASTER_SPREADSHEET_NOT_FOUND':Number(error?.status)===504?'MASTER_GOOGLE_TIMEOUT':'MASTER_GOOGLE_UNAVAILABLE';
     console.error(JSON.stringify({event:'sikap_sync_master_read_failed',code,httpStatus:Number(error?.status||0)}));
-    return reply({ok:false,code},503);
+    return reply({ok:false,code,upstreamStatus:Number(error?.status||0)},Number(error?.status)===504?504:503);
   }
 }
