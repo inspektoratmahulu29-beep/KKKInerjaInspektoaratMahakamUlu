@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import {SEED_WORKBOOK} from '../functions/lib/seed.js';
+import {buildIntegratedDetails} from '../src/integratedDetails.js';
+const names=Object.keys(SEED_WORKBOOK.sheets);
+const d=buildIntegratedDetails(SEED_WORKBOOK.sheets,names);
+assert.equal(names.length,28);
+assert.equal(d.sheetList.filter(s=>s.available).length,28);
+assert.equal(d.subkegiatan.length,30);
+assert.equal(d.agenda.length,56);
+assert.equal(d.nonPkptCount,82);
+assert.equal(d.unclassified.length,43);
+assert.equal(d.unmapped.length,18);
+assert.equal(d.unique.budget,17643979587);
+assert.equal(d.unique.financial,9614349692);
+assert.equal(d.unique.remaining,8029629895);
+assert.equal(d.unique.plannedPkpt,3531979288);
+assert.ok(Math.abs(d.physicalComparison.rekap - .5449208471565661)<1e-10);
+assert.equal(d.physicalComparison.smpeq,.4138);
+assert.ok(d.physicalComparison.differencePoints>13);
+const shifted=structuredClone(SEED_WORKBOOK.sheets);
+for (const s of Object.values(shifted)) {
+ const colCount=s.cols;
+ s.values=s.values.map(row=>{const out=[];for(let i=0;i<colCount;i++)out[i*2+1]=row?.[i]??'';return out;});
+ s.schemaColumns=Array.from({length:colCount},(_,original)=>({original,current:original*2+1}));
+}
+const moved=buildIntegratedDetails(shifted,names);
+assert.deepEqual(moved.unique,d.unique);
+assert.deepEqual(moved.agenda,d.agenda);
+assert.deepEqual(moved.subkegiatan,d.subkegiatan);
+console.log('PASS: 28 latest Excel sources; 30 unique subkegiatan, 56 PKPT agenda, 82 Non-PKPT, 43 unclassified ST, 18 unresolved mappings; distinct fiscal/physical authority; adaptive inserted columns.');

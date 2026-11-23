@@ -10,26 +10,26 @@ import { onRequestPost } from '../functions/api/admin/official-monev.js';
 import {createHash} from 'node:crypto';
 if(!globalThis.crypto)globalThis.crypto=webcrypto;
 const official=SEED_WORKBOOK.sheets[OFFICIAL_REPORT_2026];
-assert.equal(Object.keys(SEED_WORKBOOK.sheets).length,15);
+assert.equal(Object.keys(SEED_WORKBOOK.sheets).length,28);
 assert.equal(official.cols,24);
 assert.equal(official.rows,22);
-assert.equal(official.values.flat().filter(v=>v!==''&&v!==null).length,161);
+assert.equal(official.values.flat().filter(v=>v!==''&&v!==null).length,180);
 assert.equal(official.presentation.merges.length,46);
-assert.equal(Object.values(SEED_WORKBOOK.sheets).reduce((a,s)=>a+Object.keys(s.formulas||{}).length,0),340);
+assert.equal(Object.values(SEED_WORKBOOK.sheets).reduce((a,s)=>a+Object.keys(s.formulas||{}).length,0),2388);
 const report=summarizeOfficialMonev(official);
 assert.equal(report.activities,12);
-assert.equal(report.plannedBudget,2782912288);
-assert.equal(report.realizedBudget,null);
-assert.equal(report.missingRealizations,12);
+assert.equal(report.plannedBudget,2846194538);
+assert.equal(report.realizedBudget,1232815268);
+assert.equal(report.missingRealizations,0);
 assert.equal(compatibleSheetNames('Laporan Monev Renaksi',OFFICIAL_REPORT_2026),false);
 assert.equal(compatibleSheetNames(OFFICIAL_REPORT_2026,officialReportName(2027)),false);
 assert.equal(compatibleSheetNames('Monev Program','Monev_Program'),true);
 const metrics=calculateMetrics(SEED_WORKBOOK.sheets);
-assert.equal(metrics.monevResmi.plannedBudget,2782912288);
-assert.equal(metrics.totalAnggaran,28172392109,'Official report must not be double-counted in general KPI');
+assert.equal(metrics.monevResmi.plannedBudget,2846194538);
+assert.equal(metrics.totalAnggaran,17643979587,'Official report must not be double-counted in general KPI');
 // Ensure latest exact XLSX is embedded as the protected download artifact.
 const templateDigest=createHash('sha256').update(Buffer.from(TEMPLATE_2026_XLSX_BASE64,'base64')).digest('hex');
-assert.equal(templateDigest,'848724443687ce8766a57ab06b08da6e4daceb499465bfa71622f97cdceeb84d', 'Bundled Excel template must match the latest user-provided reference byte for byte.');
+assert.equal(templateDigest,'30fc95deb415b5b7d7de83fb34b8b1013c368a461a71c2aeddfe011d58c53c15', 'Bundled Excel template must match the latest user-provided reference byte for byte.');
 // Mock Google Cloud/Sheets: adding the official report must never issue a
 // values update for IKU or any existing worksheet.
 const keys=await webcrypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
@@ -56,8 +56,10 @@ const writes=calls.filter(x=>x.body?.data?.length).flatMap(x=>x.body.data);
 assert.ok(writes.length,'Report should be persisted to Google Sheets');
 assert.ok(writes.every(x=>x.range.includes('Laporan_Monev_Renaksi_2026')),'Migrate must not write to any existing worksheet');
 assert.equal(writes[0].values[8][19],194820000);
+const firstWriteCount=calls.filter(x=>x.body?.data?.length).length;
+assert.ok(firstWriteCount>=1,'Raw values and formulas may be separate safe writes');
 const again=await post();assert.equal((await again.json()).created,false);
-assert.equal(calls.filter(x=>x.body?.data?.length).length,1,'Repeated migration must not rewrite report');
-console.log('PASS official Monev: 15 sheets, 340 formulas, 161 report cells, 46 merges, original XLSX byte-exact, independent KPI, and one-shot protected no-overwrite migration.');
+assert.equal(calls.filter(x=>x.body?.data?.length).length,firstWriteCount,'Repeated migration must not rewrite report');
+console.log('PASS official Monev: 28 sheets, 2388 formulas, 180 report cells, 46 merges, original XLSX byte-exact, independent KPI, and one-shot protected no-overwrite migration.');
 
 assert.equal(resolveExistingTitle(2026,'Laporan Monev Renaksi',['Laporan_Monev_Renaksi_2026']),null,'Laporan analitik must never alias official Excel sheet');
