@@ -459,7 +459,14 @@ export async function readWorkbook(env, canonicalNames, year = 2026, period = 'a
     };
   }
 
-  const ranges = resolved.map(x => {const p=currentSheets.find(s=>s.properties.title===x.actual).properties;return `${q(x.actual)}!A:${columnLetter(p.gridProperties.columnCount-1)}`;});
+  const ranges = resolved.map(x => {
+    const p=currentSheets.find(s=>s.properties.title===x.actual).properties;
+    const mapped=(meta.namedRanges||[]).filter(n=>n.name.startsWith(`KKCOL_${year}_${p.sheetId}_`));
+    const extra=Math.max(0,...mapped.map(n=>n.range?.endColumnIndex||0));
+    const view=meta.namedRanges?.find(n=>n.name===`KKVIEW_${year}_${p.sheetId}`)?.range?.endColumnIndex||0;
+    const width=Math.max(26,Math.min(p.gridProperties?.columnCount||26,64),extra,view);
+    return `${q(x.actual)}!A:${columnLetter(width-1)}`;
+  });
   const qs = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
   const [data,formulaData]=await Promise.all(['UNFORMATTED_VALUE','FORMULA'].map(option=>
     request(env,`spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_SPREADSHEET_ID)}/values:batchGet?majorDimension=ROWS&valueRenderOption=${option}&${qs}`,{},accessToken)
