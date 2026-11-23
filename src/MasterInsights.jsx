@@ -11,7 +11,7 @@ const distinctFinancial=groups=>{
 function Overview({mode,data,pkptExecution,onOpen}){
  const pkpt=mode==='pkpt',groups=pkpt?(data?.pkptFundingGroups||[]):(data?.nonPkptFundingGroups||[]);
  const source=pkpt?data?.agendaSourceAvailable:data?.nonPkptSourceAvailable;
- const count=groups.reduce((n,g)=>n+g.rows.length,0),planned=pkpt?groups.reduce((n,g)=>n+(g.planTotal||0),0):null;
+ const count=groups.reduce((n,g)=>n+g.rows.length,0),planned=pkpt?(data?.pkptPackageBudgetTotal??null):null;
  const financial=useMemo(()=>distinctFinancial(groups),[groups]);
  const byProgram=useMemo(()=>{
   const m=new Map();for(const g of groups){const key=g.program||'Program belum terpetakan';m.set(key,(m.get(key)||0)+g.rows.length);}return [...m].sort((a,b)=>b[1]-a[1]).slice(0,4);
@@ -20,9 +20,9 @@ function Overview({mode,data,pkptExecution,onOpen}){
  return <article className={`ma-overview ${pkpt?'ma-pkpt':'ma-nonpkpt'}`}>
   <div className="ma-overview-head"><span className="ma-section-tag">{pkpt?'PENGAWASAN TERENCANA':'PENUGASAN DI LUAR PKPT'}</span><span className="ma-status">{source?'Terhubung ke master':'Periksa sumber'}</span></div>
   <h3>{pkpt?'PKPT':'Non-PKPT'}</h3><p>{pkpt?'Rencana agenda, pelaksanaan pengawasan, dan anggaran subkegiatan pembiayaan.':'Surat Tugas, PPTK, pembiayaan, dan status SPJ sesuai rekap penugasan.'}</p>
-  <div className="ma-primary-stats"><button type="button" onClick={()=>onOpen(pkpt?'agenda':'nonpkpt')}><small>{pkpt?'Agenda rencana':'Surat Tugas'}</small><strong>{source?angka(count):'—'}</strong><span>Lihat rinciannya ↗</span></button><button type="button" onClick={()=>onOpen(pkpt?'agenda':'nonpkpt')}><small>Subkegiatan pembiayaan</small><strong>{source?angka(groups.length):'—'}</strong><span>Menurut sumber anggaran ↗</span></button></div>
+  <div className="ma-primary-stats"><button type="button" onClick={()=>onOpen(pkpt?'agenda':'nonpkpt')}><small>{pkpt?'Penugasan / Agenda PKPT':'Surat Tugas'}</small><strong>{source?angka(count):'—'}</strong><span>Lihat 76 rincian ↗</span></button><button type="button" onClick={()=>onOpen(pkpt?'agenda':'nonpkpt')}><small>Subkegiatan pembiayaan</small><strong>{source?angka(groups.length):'—'}</strong><span>Menurut sumber anggaran ↗</span></button></div>
   <div className="ma-finance-lines">
-   {pkpt&&<button onClick={()=>onOpen('agenda')}><span>Pagu rencana penugasan PKPT</span><b>{source?uang(planned):'—'}</b></button>}
+   {pkpt&&<button onClick={()=>onOpen('agenda')}><span>Rencana biaya paket PKPT (56 paket)</span><b>{source?uang(planned):'—'}</b></button>}
    {pkpt&&<button onClick={()=>onOpen('pelaksanaan')}><span>Baris pelaksanaan PKPT</span><b>{pkptExecution==null?'—':angka(pkptExecution)}</b></button>}
    <button onClick={()=>onOpen(pkpt?'agenda':'nonpkpt')}><span>Pagu subkegiatan terkait</span><b>{financial.count?uang(financial.budget):'Belum terpetakan'}</b></button>
    <button onClick={()=>onOpen(pkpt?'agenda':'nonpkpt')}><span>Realisasi keuangan subkegiatan terkait</span><b>{financial.count?uang(financial.real):'Belum terpetakan'}</b></button>
@@ -31,7 +31,7 @@ function Overview({mode,data,pkptExecution,onOpen}){
   </div>
   <div className="ma-distribution"><div><b>Penugasan menurut program</b><small>{source?`${angka(count)} data master`:'Sumber belum tersedia'}</small></div>{byProgram.map(([name,value])=><button type="button" key={name} onClick={()=>onOpen(pkpt?'agenda':'nonpkpt')} title={name}><span>{name}</span><b>{angka(value)}</b><i><em style={{width:`${progress(value,max)}%`}}/></i></button>)}</div>
   <button type="button" className="ma-detail" onClick={()=>onOpen(pkpt?'agenda':'nonpkpt')}>Buka rincian {pkpt?'PKPT':'Non-PKPT'} dan anggaran <span aria-hidden="true">↗</span></button>
-  <small className="ma-caveat">Pagu dan realisasi adalah nilai subkegiatan terkait, bukan biaya yang otomatis dibelanjakan pada setiap penugasan.</small>
+  <small className="ma-caveat">Pagu dan realisasi adalah nilai subkegiatan; 56 paket biaya berbeda dari 76 penugasan. Paket biaya gabungan tidak dihitung berulang.</small>
  </article>;
 }
 function MoreCard({title,value,subtitle,section,onOpen}){return <button type="button" className="ma-more-card" onClick={()=>onOpen(section)}><small>{title}</small><b>{value}</b><span>{subtitle}</span><em aria-hidden="true">↗</em></button>;}
