@@ -19,6 +19,51 @@ const amount=(s,i)=>val(s?.[i]);
 const isIndex=r=>Number.isInteger(val(r?.[0]))&&val(r?.[0])>0;
 const list=(s,start,check=isIndex)=>align(s).slice(start).filter(check);
 const prettyName=s=>String(s||'').replace(/\s+/g,' ').trim();
+// Keterkaitan program/kegiatan/PPTK dibaca dari lembar Monev, bukan disimpulkan
+// dari nama agenda atau pembagian pagu. Pencocokan hanya melalui nama subkegiatan.
+const nameKey=s=>prettyName(s).normalize('NFKC').toLocaleLowerCase('id-ID').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+function buildActivityDirectory(sheets){
+ const byName=new Map();
+ for(const source of ['Monev output Subkegiatan Utama','Monev Subkegiatan Penunjang']){
+  const rows=align(sheets?.[source]);let program='',kegiatan='';
+  for(const r of rows){
+   const p=pick(r,2),k=pick(r,4),sub=pick(r,6),pptk=pick(r,9);
+   if(/^program\s+/i.test(p))program=p;
+   if(k && !/^\d+$/.test(k) && !/nama kegiatan/i.test(k))kegiatan=k;
+   if(!sub || /^\d+$/.test(sub)||/^nama sub/i.test(sub))continue;
+   const key=nameKey(sub);if(!key)continue;
+   const previous=byName.get(key)||{};
+   byName.set(key,{
+     program:program||previous.program||'',kegiatan:kegiatan||previous.kegiatan||'',
+     pptk:pptk&&!/^(nama pptk|pptk pengawasan)$/i.test(pptk)?pptk:(previous.pptk||''),
+     hierarchySource:source
+   });
+  }
+ }
+ return byName;
+}
+function categorizeFunding(items,subList,mode){
+ const groupBy=new Map();
+ const codes=new Map(subList.filter(x=>x.code).map(x=>[x.code,x]));
+ for(const row of items){
+  const basis=codes.get(row.code||row.fundingCode)||subList.find(x=>nameKey(x.name)===nameKey(row.subkegiatan||row.funding));
+  const key=basis?.code||'nama:'+nameKey(row.subkegiatan||row.funding)||'tak-terpetakan';
+  if(!groupBy.has(key))groupBy.set(key,{
+    key,code:basis?.code||'',subkegiatan:basis?.name||row.subkegiatan||row.funding||'Belum tercantum',
+    program:basis?.program||row.program||'',kegiatan:basis?.kegiatan||row.kegiatan||'',
+    pptk:basis?.pptk||row.pptk||'',
+    dpa:basis?.dpa??row.fundingDpa??null,budget:basis?.budget??row.fundingBudget??null,
+    financial:basis?.financial??row.fundingFinancial??null,remaining:basis?.remaining??row.fundingRemaining??null,
+    absorption:basis?.absorption??row.fundingAbsorption??null,
+    rows:[],planTotal:null,claimTotal:null,claimCount:0,planCount:0
+  });
+  const group=groupBy.get(key);group.rows.push(row);
+  if(mode==='pkpt' && row.planned!=null){group.planTotal=(group.planTotal||0)+row.planned;group.planCount++;}
+  if(mode==='nonpkpt' && row.claimST!=null){group.claimTotal=(group.claimTotal||0)+row.claimST;group.claimCount++;}
+ }
+ return [...groupBy.values()].sort((a,b)=>(a.program||'ZZZ').localeCompare(b.program||'ZZZ','id')||(a.kegiatan||'ZZZ').localeCompare(b.kegiatan||'ZZZ','id')||a.subkegiatan.localeCompare(b.subkegiatan,'id'));
+}
+
 const sheetGroups={
  'IKU':'Perencanaan & IKU','Rencana Aksi':'Perencanaan & IKU',
  'Capaian Sasaran Strategis':'Capaian Kinerja','Capaian Sasaran Program':'Capaian Kinerja','Capaian Sasaran Kegiatan Utama':'Capaian Kinerja','Capaian Sasaran Kegiatan(Penun)':'Capaian Kinerja','Capaian Sasaran SUBKegiatan(U)':'Capaian Kinerja','Capaian Sasaran SUBKegiatan (P)':'Capaian Kinerja','Capaian Detail Penunjang 2026':'Capaian Kinerja',
@@ -32,9 +77,13 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
   const totalLines=totals.slice(7,14).filter(r=>txt(r?.[0]));
   const groups=totalLines.map(r=>({name:pick(r,0),subCount:amount(r,1),plannedPkpt:amount(r,2),dpa:amount(r,3),budget:amount(r,4),financial:amount(r,5),remaining:amount(r,6),absorption:amount(r,7),basis:pick(r,8)}));
   const unique=groups.find(x=>/SELURUH INSPEKTORAT/i.test(x.name))||null;
+  const activityDirectory=buildActivityDirectory(sheets);
   const subkegiatan=list(get('Ringkasan Anggaran PKPT Non'),4,r=>/^\d+(?:\.\d+)+$/.test(pick(r,1)));
   const summary=subkegiatan.map(r=>({code:pick(r,1),name:pick(r,2),dpa:amount(r,3),budget:amount(r,4),financial:amount(r,5),remaining:amount(r,6),absorption:amount(r,7),agenda:amount(r,8)||0,pkptPlan:amount(r,9)||0,pkptST:amount(r,10)||0,nonPkptST:amount(r,11)||0}));
+  for(const sub of summary)Object.assign(sub,activityDirectory.get(nameKey(sub.name))||{});
+  const bySubCode=new Map(summary.filter(x=>x.code).map(x=>[x.code,x]));
   const agenda=list(get('Rincian Anggaran PKPT 2026'),4).map(r=>({id:amount(r,0),name:pick(r,1),irban:pick(r,2),subkegiatan:pick(r,3),code:pick(r,4),start:pick(r,5),report:pick(r,6),outputTarget:amount(r,7),planned:amount(r,8),subDpa:amount(r,9),subBudget:amount(r,10),subFinancial:amount(r,11),subRemaining:amount(r,12),subAbsorption:amount(r,13)}));
+  for(const item of agenda){const sub=bySubCode.get(item.code)||summary.find(x=>nameKey(x.name)===nameKey(item.subkegiatan));if(sub){item.program=sub.program||'';item.kegiatan=sub.kegiatan||'';item.pptk=sub.pptk||'';item.fundingMapped=true;}else{Object.assign(item,activityDirectory.get(nameKey(item.subkegiatan))||{});item.fundingMapped=false;}}
   const dpa=list(get('Dasar Indikator DPA 2026'),4,r=>/^\d+(?:\.\d+)+$/.test(pick(r,1))).map(r=>({code:pick(r,1),name:pick(r,2),indicator:pick(r,3),target:pick(r,4),unit:pick(r,5),budget:amount(r,6),financial:amount(r,7),absorption:amount(r,8),pkptST:amount(r,9)||0,nonPkptST:amount(r,10)||0}));
   const evidence=list(get('Register Bukti Capaian 2026'),4).map(r=>({type:pick(r,1),subkegiatan:pick(r,2),document:pick(r,3),date:pick(r,4),object:pick(r,5),output:pick(r,6),status:pick(r,7),impact:pick(r,8),source:pick(r,9)}));
   const unclassified=list(get('ST Belum Klasifikasi'),5).map(r=>({number:pick(r,1),month:pick(r,3),activity:pick(r,4),note:pick(r,10)}));
@@ -44,7 +93,10 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
   // Administrative status is not evidence of a verified audit output.
   const nonPkpt=nonPkptRows.map((r,index)=>({
     index:index+1,month:pick(r,3),activity:pick(r,4),object:pick(r,8),
-    funding:pick(r,9),tripType:pick(r,11),location:pick(r,12),days:amount(r,13),
+    funding:pick(r,9),pptk:pick(r,10),tripType:pick(r,11),location:pick(r,12),days:amount(r,13),
+    fundingDpa:amount(r,23),fundingBudget:amount(r,24),fundingFinancial:amount(r,25),
+    fundingRemaining:amount(r,26),fundingAbsorption:amount(r,27),
+    planST:amount(r,28),claimST:amount(r,29),
     outputType:pick(r,14),target:amount(r,15),status:pick(r,16)
   }));
   // Match only identical normalized funding names. Do not use fuzzy similarity to assign public budgets.
@@ -55,9 +107,30 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
     const row=byFundingName.get(prettyName(st.funding).toLowerCase());
     if(!row)continue;
     st.fundingMapped=true;st.fundingCode=row.code;st.fundingBudget=row.budget;
-    st.fundingFinancial=row.financial;st.fundingRemaining=row.remaining;
+    st.fundingFinancial=row.financial;st.fundingRemaining=row.remaining;st.fundingDpa=row.dpa;st.fundingAbsorption=row.absorption;st.program=row.program||'';st.kegiatan=row.kegiatan||'';st.pptk=st.pptk||row.pptk||'';
     nonPkptMappedCount++;
   }
+  for(const st of nonPkpt){if(st.program)continue;const directory=activityDirectory.get(nameKey(st.funding));if(directory){st.program=directory.program||'';st.kegiatan=directory.kegiatan||'';st.pptk=st.pptk||directory.pptk||'';}}
+  const pkptExecution=list(get('Rekap realisasi PKPT'),6,r=>!!pick(r,8)).map(r=>({
+    activity:pick(r,3),status:pick(r,4),irban:pick(r,5),jenis:pick(r,7),
+    subkegiatan:pick(r,8),code:pick(r,26),target:amount(r,9),realized:amount(r,11),
+    rencanaBiaya:amount(r,18),spj:amount(r,24),catatan:pick(r,17)
+  }));
+  const pkptFundingGroups=categorizeFunding(agenda,summary,'pkpt');
+  const nonPkptFundingGroups=categorizeFunding(nonPkpt,summary,'nonpkpt');
+  for(const group of pkptFundingGroups)group.executionRows=[];
+  for(const job of pkptExecution){
+    let group=pkptFundingGroups.find(g=>(job.code&&g.code===job.code)||nameKey(g.subkegiatan)===nameKey(job.subkegiatan));
+    if(!group){const sub=bySubCode.get(job.code)||summary.find(x=>nameKey(x.name)===nameKey(job.subkegiatan));
+      group={key:sub?.code||'pelaksanaan:'+nameKey(job.subkegiatan),code:sub?.code||'',subkegiatan:sub?.name||job.subkegiatan,
+        program:sub?.program||'',kegiatan:sub?.kegiatan||'',pptk:sub?.pptk||'',
+        dpa:sub?.dpa??null,budget:sub?.budget??null,financial:sub?.financial??null,remaining:sub?.remaining??null,
+        absorption:sub?.absorption??null,rows:[],executionRows:[],planTotal:null,planCount:0,claimTotal:null,claimCount:0};
+      pkptFundingGroups.push(group);
+    }
+    group.executionRows.push(job);
+  }
+
   const monthSummary=[...new Set(nonPkpt.map(r=>r.month).filter(Boolean))].map(month=>({
     month,count:nonPkpt.filter(r=>r.month===month).length,
     verified:nonPkpt.filter(r=>r.month===month&&/terverifikasi/i.test(r.status)).length
@@ -87,7 +160,7 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
   const hasUnique=!!unique;
   return {available:!!(summary.length||agenda.length||hasUnique||sheetList.some(x=>x.available)),period:pick(totals[2],0)||'',
     financialAuthority:hasUnique?'TOTAL REKAP PKPT NON 2026!A8:I8':null,
-    unique,groups,subkegiatan:summary,agenda,dpa,evidence,unclassified,unmapped,
+    unique,groups,subkegiatan:summary,agenda,pkptExecution,pkptFundingGroups,nonPkptFundingGroups,dpa,evidence,unclassified,unmapped,
     nonPkptCount:nonPkptRows.length,nonPkpt,nonPkptSourceAvailable,nonPkptMappedCount,monthSummary,fundingSummary,agendaSourceAvailable,
     dppaRows,dppaDifference,dppaDifferences,dppaSourceAvailable:!!get('Rekonsiliasi DPPA 2026'),
     scheduleCount:scheduling.length,validation,physicalComparison,sheetList,
