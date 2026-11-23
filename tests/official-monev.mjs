@@ -50,11 +50,12 @@ globalThis.fetch=async(url,init={})=>{
 };
 const post=()=>onRequestPost({request:new Request('https://test.invalid/api/admin/official-monev',{method:'POST',headers:{Cookie:`__Host-kk_session=${encodeURIComponent(session)}`},body:JSON.stringify({year:2026,period:'annual'})}),env});
 const result=await post();assert.equal(result.status,200);assert.equal((await result.json()).created,true);
-assert.equal(meta.sheets.length,2);
+assert.equal(meta.sheets.length,3,'Migration creates official report and hidden _KK_SYNC revision sheet');
 assert.equal(meta.sheets[1].properties.title,'2026__Laporan_Monev_Renaksi_2026');
+assert.equal(meta.sheets[2].properties.title,'_KK_SYNC');
 const writes=calls.filter(x=>x.body?.data?.length).flatMap(x=>x.body.data);
 assert.ok(writes.length,'Report should be persisted to Google Sheets');
-assert.ok(writes.every(x=>x.range.includes('Laporan_Monev_Renaksi_2026')),'Migrate must not write to any existing worksheet');
+assert.ok(writes.every(x=>x.range.includes('Laporan_Monev_Renaksi_2026')),'Migration must not write to existing user worksheets');
 assert.equal(writes[0].values[8][19],194820000);
 const firstWriteCount=calls.filter(x=>x.body?.data?.length).length;
 assert.ok(firstWriteCount>=1,'Raw values and formulas may be separate safe writes');
