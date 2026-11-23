@@ -12,7 +12,7 @@ export async function onRequestGet({request,env}){
   for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
   return new Response(bytes,{headers:{
     'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'Content-Disposition':'attachment; filename="2026_Kertas_Kerja_Inspektorat_Mahakam_Ulu_SESUAI_PDF_MONEV_RENAKSI.xlsx"',
+    'Content-Disposition':'attachment; filename="2026_Kertas_Kerja_Inspektorat_Mahakam_Ulu_PKPT_TRIWULAN_DILENGKAPI TERBARU.xlsx"',
     'Cache-Control':'private,no-store','X-Content-Type-Options':'nosniff'
   }});
 }
