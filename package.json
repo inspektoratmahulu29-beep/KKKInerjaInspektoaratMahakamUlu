@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "check:backend": "node scripts/check-backend.mjs",
     "test": "node tests/integrated-28-sheets.mjs && node tests/regression.mjs && node tests/backend.mjs && node tests/period.mjs && node tests/backend-issues.mjs && node tests/official-monev.mjs && node tests/import-hardening.mjs && node tests/render.mjs",
-    "test:backend": "node tests/integrated-28-sheets.mjs && node tests/regression.mjs && node tests/backend.mjs && node tests/period.mjs && node tests/backend-issues.mjs && node tests/official-monev.mjs && node tests/import-hardening.mjs && node tests/revision-marker.mjs && node tests/new-kpi-drilldown.mjs"
+    "test:backend": "node tests/integrated-28-sheets.mjs && node tests/regression.mjs && node tests/backend.mjs && node tests/period.mjs && node tests/backend-issues.mjs && node tests/official-monev.mjs && node tests/import-hardening.mjs && node tests/revision-marker.mjs && node tests/new-kpi-drilldown.mjs && node tests/sikap-master-bridge.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "4.3.3",
