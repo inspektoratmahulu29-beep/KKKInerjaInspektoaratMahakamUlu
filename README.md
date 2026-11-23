@@ -1,5 +1,5 @@
-# V16 — Dashboard dan Kertas Kerja Terhubung
+# SIKAP Inspektorat Kabupaten Mahakam Ulu — Paket Terpadu 2026
 
-Baca **PANDUAN_V16.md** untuk pemasangan, konfigurasi, penggunaan editor, hasil pengujian dan batas verifikasi. Dokumen versi lama disertakan sebagai riwayat; bila berbeda, ikuti panduan V16.
+**Panduan terkini:** [PANDUAN_PEMBARUAN_TERPADU_28_SHEET_2026.md](PANDUAN_PEMBARUAN_TERPADU_28_SHEET_2026.md).
 
-Build: `npm ci` lalu `npm run build`. Output Cloudflare Pages: `dist`; folder `functions` berada di root repository.
+Paket ini menyesuaikan source code dengan workbook 28 sheet Oktober 2026. Riwayat panduan versi terdahulu tetap disimpan. Jalankan `npm ci` dan `npm run build`, output Cloudflare Pages `dist` serta Pages Functions di folder `functions`.

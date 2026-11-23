@@ -1,15 +1,15 @@
 {
   "name": "dashboard-realisasi-kinerja-mahakam-ulu",
   "private": true,
-  "version": "23.0.0",
+  "version": "26.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "npm run check:backend && vite build",
     "preview": "vite preview",
     "check:backend": "node scripts/check-backend.mjs",
-    "test": "node tests/regression.mjs && node tests/backend.mjs && node tests/period.mjs && node tests/backend-issues.mjs && node tests/official-monev.mjs && node tests/import-hardening.mjs && node tests/render.mjs",
-    "test:backend": "node tests/regression.mjs && node tests/backend.mjs && node tests/period.mjs && node tests/backend-issues.mjs && node tests/official-monev.mjs && node tests/import-hardening.mjs"
+    "test": "node tests/integrated-28-sheets.mjs && node tests/regression.mjs && node tests/backend.mjs && node tests/period.mjs && node tests/backend-issues.mjs && node tests/official-monev.mjs && node tests/import-hardening.mjs && node tests/render.mjs",
+    "test:backend": "node tests/integrated-28-sheets.mjs && node tests/regression.mjs && node tests/backend.mjs && node tests/period.mjs && node tests/backend-issues.mjs && node tests/official-monev.mjs && node tests/import-hardening.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "4.3.3",
