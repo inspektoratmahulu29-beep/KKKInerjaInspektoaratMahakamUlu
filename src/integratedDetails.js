@@ -66,6 +66,64 @@ function categorizeFunding(items,subList,mode){
  return [...groupBy.values()].sort((a,b)=>(a.program||'ZZZ').localeCompare(b.program||'ZZZ','id')||(a.kegiatan||'ZZZ').localeCompare(b.kegiatan||'ZZZ','id')||a.subkegiatan.localeCompare(b.subkegiatan,'id'));
 }
 
+
+// Satu otoritas untuk pagu, realisasi, fisik dan sisa: baris induk
+// 'Realisasi Fisik & Keu'. Kegiatan/anak/induk bukan transaksi aditif.
+function buildFinancialLedger(sheet){
+ const rows=align(sheet);
+ const header=rows.findIndex(r=>r.some(v=>/program\s*\/\s*kegiatan\s*\/\s*sub\s*kegiatan/i.test(txt(v))));
+ if(header<0)return {available:false,source:'Realisasi Fisik & Keu',reason:'Kolom sumber tidak ditemukan',total:null,programs:[],byName:{},subCount:0};
+ const col=rows[header].findIndex(v=>/program\s*\/\s*kegiatan\s*\/\s*sub\s*kegiatan/i.test(txt(v)));
+ const headerRow=rows[header]||[];
+ const locate=(pattern,fallback)=>{const found=headerRow.findIndex(v=>pattern.test(txt(v)));return found>=0?found:fallback;};
+ const c={name:col,budget:locate(/^anggaran$/i,col+1),physical:locate(/^realisasi fisik$/i,col+3),financial:locate(/^realisasi keuangan$/i,col+5),remaining:locate(/^sisa dana$/i,col+8)};
+ const get=(r,rowNo)=>{
+   const budget=val(r[c.budget]),financial=val(r[c.financial]),sourceRemaining=val(r[c.remaining]),physical=val(r[c.physical]);
+   return {row:rowNo,name:pick(r,c.name),budget,financial,remaining:sourceRemaining??(budget!=null&&financial!=null?budget-financial:null),physical:physical==null?null:physical/100,absorption:budget>0&&financial!=null?financial/budget:null};
+ };
+ const officeIndex=rows.findIndex((r,i)=>i>header&&/^inspektorat$/i.test(pick(r,c.name)));
+ const totalIndex=rows.findIndex((r,i)=>i>header&&/jumlah\s+belanja/i.test(pick(r,0)));
+ const baseIndex=officeIndex>=0?officeIndex:totalIndex;
+ const total=baseIndex>=0?get(rows[baseIndex],baseIndex+1):null;
+ const programs=[], byName={}, lookup=new Map(), start=officeIndex>=0?officeIndex+1:header+1, end=totalIndex>=0?totalIndex:rows.length;
+ let currentProgram=null,currentKegiatan='';
+ for(let i=start;i<end;i++){
+  const r=rows[i]||[],name=pick(r,c.name),number=pick(r,0);
+  if(!name||/^\d+$/.test(name))continue;
+  const item=get(r,i+1);
+  if(item.budget==null&&item.financial==null)continue;
+  if(/^program\s+/i.test(name)){
+    currentProgram={...item,kegiatan:[],name};programs.push(currentProgram);currentKegiatan='';continue;
+  }
+  if(/^\d+(?:\.\d+)*$/.test(number)) {currentKegiatan=name;continue;}
+  const key=nameKey(name);
+  if(!key)continue;
+  const record={...item,program:currentProgram?.name||'',kegiatan:currentKegiatan};
+  const existing=lookup.get(key);
+  if(existing)lookup.set(key,{ambiguous:true});else lookup.set(key,record);
+ }
+ for(const [key,value] of lookup)byName[key]=value;
+ const programTotals=programs.every(p=>p.budget!=null&&p.financial!=null)?{
+   budget:programs.reduce((sum,p)=>sum+p.budget,0),
+   financial:programs.reduce((sum,p)=>sum+p.financial,0)
+ }:null;
+ const difference=programTotals&&total?{budget:total.budget-programTotals.budget,financial:total.financial-programTotals.financial}:null;
+ const balanceDifference=total&&total.budget!=null&&total.financial!=null&&total.remaining!=null?total.budget-total.financial-total.remaining:null;
+ return {available:!!total,source:'Realisasi Fisik & Keu',total,programs,byName,subCount:lookup.size,programTotals,difference,balanceDifference,
+  reason:total?'':'Baris total INSPEKTORAT/JUMLAH BELANJA tidak ditemukan'};
+}
+function reconcileFunding(groups,ledger){
+ return groups.map(g=>{
+  const source=ledger.byName?.[nameKey(g.subkegiatan)];
+  if(!ledger.available||!source||source.ambiguous)return {...g,financeMatched:false,financialBasis:'Ringkasan Anggaran PKPT Non',financeWarning:source?.ambiguous?'Nama subkegiatan berulang; cocokkan secara manual':'Belum cocok persis dengan Realisasi Fisik & Keu',physical:null};
+  return {...g,referenceBudget:g.budget,referenceFinancial:g.financial,referenceRemaining:g.remaining,
+   budget:source.budget,financial:source.financial,remaining:source.remaining,absorption:source.absorption,physical:source.physical,
+   financeMatched:true,financeRow:source.row,financialBasis:`Realisasi Fisik & Keu!B${source.row}:J${source.row}`,
+   budgetDifference:g.budget!=null&&source.budget!=null?g.budget-source.budget:null,
+   financialDifference:g.financial!=null&&source.financial!=null?g.financial-source.financial:null};
+ });
+}
+
 const sheetGroups={
  'IKU':'Perencanaan & IKU','Rencana Aksi':'Perencanaan & IKU',
  'Capaian Sasaran Strategis':'Capaian Kinerja','Capaian Sasaran Program':'Capaian Kinerja','Capaian Sasaran Kegiatan Utama':'Capaian Kinerja','Capaian Sasaran Kegiatan(Penun)':'Capaian Kinerja','Capaian Sasaran SUBKegiatan(U)':'Capaian Kinerja','Capaian Sasaran SUBKegiatan (P)':'Capaian Kinerja','Capaian Detail Penunjang 2026':'Capaian Kinerja',
@@ -158,8 +216,9 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
     subkegiatan:pick(r,8),code:pick(r,26),target:amount(r,9),realized:amount(r,11),
     rencanaBiaya:amount(r,18),spj:amount(r,24),catatan:pick(r,17)
   }));
-  const pkptFundingGroups=categorizeFunding(agenda,summary,'pkpt');
-  const nonPkptFundingGroups=categorizeFunding(nonPkpt,summary,'nonpkpt');
+  const financialLedger=buildFinancialLedger(get('Realisasi Fisik & Keu'));
+  const pkptFundingGroups=reconcileFunding(categorizeFunding(agenda,summary,'pkpt'),financialLedger);
+  const nonPkptFundingGroups=reconcileFunding(categorizeFunding(nonPkpt,summary,'nonpkpt'),financialLedger);
   for(const group of pkptFundingGroups)group.executionRows=[];
   for(const job of pkptExecution){
     let group=pkptFundingGroups.find(g=>(job.code&&g.code===job.code)||nameKey(g.subkegiatan)===nameKey(job.subkegiatan));
@@ -201,7 +260,8 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
   });
   const hasUnique=!!unique;
   return {available:!!(summary.length||agenda.length||hasUnique||sheetList.some(x=>x.available)),period:pick(totals[2],0)||'',
-    financialAuthority:hasUnique?'TOTAL REKAP PKPT NON 2026!A8:I8':null,
+    financialAuthority:financialLedger.available?`Realisasi Fisik & Keu!C${financialLedger.total.row}:J${financialLedger.total.row}`:null,
+    financialLedger,
     unique,groups,subkegiatan:summary,agenda,budgetPackages,pkptPackageBudgetTotal,pkptUnmatchedCount,pkptTentativeCount,pkptOrphanPackageIds,pkptOrphanBudget,pkptSourceCorrected,pkptSpjEvidenceMissing,pkptSpjVerifiedCount,pkptSpjVerifiedAmount,pkptExecution,pkptFundingGroups,nonPkptFundingGroups,dpa,evidence,unclassified,unmapped,
     nonPkptCount:nonPkptRows.length,nonPkpt,nonPkptSourceAvailable,nonPkptMappedCount,monthSummary,fundingSummary,agendaSourceAvailable,
     dppaRows,dppaDifference,dppaDifferences,dppaSourceAvailable:!!get('Rekonsiliasi DPPA 2026'),
@@ -211,6 +271,7 @@ export function buildIntegratedDetails(sheets,requestedNames=[]){
       'Terdapat 76 baris penugasan PKPT dan 56 paket rencana biaya. Paket yang digunakan bersama tidak boleh digandakan saat menampilkan rincian penugasan.',
       'Pagu rencana paket PKPT berbeda dari pagu DPA/subkegiatan dan realisasi keuangan. Realisasi subkegiatan dapat berulang pada lebih dari satu penugasan.',
       'Perbedaan fisik rekap dibanding fisik SMPEQ mencerminkan sumber/metode yang berbeda, bukan angka yang otomatis dapat disamakan.',
-      'Surat Tugas, serapan keuangan, dan jadwal PKPT bukan bukti output selesai. Nilai capaian hanya dianggap terbukti setelah dokumen keluaran sah diverifikasi.'
+      'Surat Tugas, serapan keuangan, dan jadwal PKPT bukan bukti output selesai. Nilai capaian hanya dianggap terbukti setelah dokumen keluaran sah diverifikasi.',
+      'Acuan total anggaran, realisasi, sisa, fisik, dan serapan adalah baris induk Realisasi Fisik & Keu. Nilai subkegiatan yang belum cocok persis diberi penanda dan tidak diganti dengan perkiraan.'
     ]};
 }

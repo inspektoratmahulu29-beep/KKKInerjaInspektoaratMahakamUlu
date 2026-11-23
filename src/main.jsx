@@ -8,6 +8,7 @@ import { calculateMetrics, capaianMeta, capaianMetric } from '../functions/lib/m
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
+import { formatExcelExport } from './excelExportPolish.js';
 import './styles.css';
 import { adminMe, adminLogin, adminLogout, fetchState, saveState, saveSheet, saveCells, importSheet, importSheets, fetchRevision, pushAudit, changeStructure, fetchTemplate, addOfficialMonev } from './adminApi.js';
 import { OFFICIAL_REPORT_2026,compatibleSheetNames,isOfficialReportName,officialReportName } from '../functions/lib/report-schema.js';
@@ -543,7 +544,7 @@ function safeSheetName(name){ return String(name).replace(/[\\/?*\[\]:]/g,' ').s
 function aoaFromSheet(s){ return (s.values||[]).map(r=>Array.from({length:s.cols||0},(_,i)=>r?.[i]??'')); }
 function applyFormulaObjects(ws, s){ for(const [a,f] of Object.entries(s.formulas||{})){ if(!ws[a]) ws[a]={t:'s',v:s.values?.[XLSX.utils.decode_cell(a).r]?.[XLSX.utils.decode_cell(a).c]??''}; ws[a].f=String(f).replace(/^=/,''); } }
 function downloadBlob(blob, filename){ const u=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=u; a.download=filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1000); }
-function exportExcelPayload(payload, year, onlySheet=null){
+async function exportExcelPayload(payload, year, onlySheet=null){
   const template=null; // Export live dimensions and formulas, never stale template coordinates.
   let wb=null;
   if(template?.base64){ try{wb=XLSX.read(template.base64,{type:'base64',cellFormula:true,cellNF:true,cellStyles:true});}catch{wb=null;} }
@@ -552,14 +553,18 @@ function exportExcelPayload(payload, year, onlySheet=null){
     const mapping=buildSchemaMapping(payload,payload);
     updateWorkbookFromPayload(wb,payload,mapping);
     if(onlySheet){ const keep=new Set([onlySheet]); wb.SheetNames=wb.SheetNames.filter(n=>keep.has(n)); }
-    if(!onlySheet){
-      const d=derive(payload); const sum=[['DATABASE REALISASI KINERJA',''],['Organisasi',ORG],['Tahun',year],[],['KPI','Nilai'],['Total Anggaran',d.budgetTotal],['Realisasi Keuangan',d.financialTotal],['Serapan Keuangan',d.financialRate/100],['Rata-rata Fisik',d.physicalRate/100],['Penugasan PKPT',d.pkptCount],['Selesai',d.done],['Berjalan',d.progress],['Belum',d.pending],['Output Utama',d.outputUtama],['Output Penunjang',d.outputPenunjang],['Kelengkapan Database',d.overallCompleteness/100],['Rata-rata Capaian',d.avgCapaian===null?'':d.avgCapaian/100]]; if(!wb.Sheets['Dashboard']) XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(sum),'Dashboard'); else wb.Sheets['Dashboard']=XLSX.utils.aoa_to_sheet(sum); if(!wb.SheetNames.includes('Dashboard')) wb.SheetNames.unshift('Dashboard'); }
+    // Ekspor hanya sheet master yang tersedia; tidak membuat sheet Dashboard tambahan.
   } else {
     const entries=onlySheet ? [[onlySheet,payload.sheets[onlySheet]]] : Object.entries(payload.sheets||{});
-    if(!onlySheet){const d=derive(payload);const summary=[['DATABASE REALISASI KINERJA',''],['Organisasi',ORG],['Tahun',year],[],['KPI','Nilai'],['Total Anggaran',d.budgetTotal],['Realisasi Keuangan',d.financialTotal],['Serapan Keuangan',d.financialRate/100],['Rata-rata Fisik',d.physicalRate/100],['Penugasan PKPT',d.pkptCount],['Selesai',d.done],['Berjalan',d.progress],['Belum',d.pending],['Output Utama',d.outputUtama],['Output Penunjang',d.outputPenunjang],['Kelengkapan Database',d.overallCompleteness/100],['Rata-rata Capaian',d.avgCapaian===null?'':d.avgCapaian/100]];XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(summary),'Dashboard');}
     const used={}; entries.forEach(([name,s])=>{if(!s)return;let sn=safeSheetName(name),base=sn,i=2;while(used[sn])sn=(base.slice(0,27)+`_${i++}`).slice(0,31);used[sn]=1;const ws=XLSX.utils.aoa_to_sheet(aoaFromSheet(s));applyFormulaObjects(ws,s);if(s.presentation){if(s.presentation.merges)ws['!merges']=s.presentation.merges.map(m=>({s:m.s,e:m.e}));if(s.presentation.cols)ws['!cols']=s.presentation.cols.map(c=>c?({...c}):null);if(s.presentation.rows)ws['!rows']=s.presentation.rows.map(r=>r?({...r}):null);}XLSX.utils.book_append_sheet(wb,ws,sn);});
   }
-  const arr=XLSX.write(wb,{bookType:'xlsx',type:'array',compression:true}); downloadBlob(new Blob([arr],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), onlySheet?`Kertas-Kerja-${onlySheet}-${year}.xlsx`:`Database-Realisasi-Kinerja-TA-${year}.xlsx`);
+  let arr;
+  try { arr=await formatExcelExport(wb,XLSX); }
+  catch(error){ console.error('Gagal memformat Excel:',error);
+    window.alert(`Ekspor dengan tata letak otomatis belum dapat dilakukan: ${error.message}. Periksa file vendor dan muat ulang halaman. Tidak ada file yang diekspor agar format tidak keliru.`);
+    return;
+  }
+  downloadBlob(new Blob([arr],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), onlySheet?`Kertas-Kerja-${onlySheet}-${year}.xlsx`:`Database-Realisasi-Kinerja-TA-${year}.xlsx`);
 }
 
 function yearFromPayload(payload) {
