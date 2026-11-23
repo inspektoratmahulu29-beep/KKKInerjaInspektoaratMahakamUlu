@@ -47,8 +47,6 @@ export async function getGoogleAccessToken(env) {
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const cached = tokenCache;
-  if (cached && cached.expiresAt - now > 120) return cached.accessToken;
 
   let sa;
   try {
@@ -62,6 +60,10 @@ export async function getGoogleAccessToken(env) {
   if (!sa?.client_email || !sa?.private_key) {
     throw new Error('Service Account JSON tidak lengkap');
   }
+
+  const credentialIdentity=`${sa.client_email}:${sa.private_key_id||sa.private_key.slice(-80)}`;
+  const cached = tokenCache;
+  if (cached?.credentialIdentity===credentialIdentity && cached.expiresAt - now > 120) return cached.accessToken;
 
   const jwt = await signJwt(sa.private_key, { alg: 'RS256', typ: 'JWT' }, {
     iss: sa.client_email,
@@ -91,6 +93,7 @@ export async function getGoogleAccessToken(env) {
   }
 
   tokenCache = {
+    credentialIdentity,
     accessToken: data.access_token,
     expiresAt: now + Number(data.expires_in || 3600)
   };
