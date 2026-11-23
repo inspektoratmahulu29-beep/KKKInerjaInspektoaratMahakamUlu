@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {buildIntegratedDetails} from '../src/integratedDetails.js';
+const fixture=process.env.PKPT_FIXTURE;if(!fixture)throw Error('Set PKPT_FIXTURE to exported 28-sheet JSON fixture');
+const sheets=JSON.parse(fs.readFileSync(fixture,'utf8'));
+const a=buildIntegratedDetails(sheets,Object.keys(sheets));
+assert.equal(a.agenda.length,76);assert.equal(a.budgetPackages.length,56);assert.equal(a.pkptSpjEvidenceMissing,76);
+assert.equal(a.pkptSpjVerifiedCount,0);assert.equal(a.pkptSpjVerifiedAmount,0);
+const r=sheets['Rekap realisasi PKPT'].values[6];
+r[24]=450000;r[38]='SPJ-RINTIS-001';r[39]='2026-11-23';r[40]='https://internal.example/bukti';r[41]='Petugas internal';r[42]='Sesuai';
+const b=buildIntegratedDetails(sheets,Object.keys(sheets));
+assert.equal(b.pkptSpjVerifiedCount,1);assert.equal(b.pkptSpjVerifiedAmount,450000);
+assert.equal(b.agenda[0].proofStatus,'Terverifikasi');
+assert.equal(b.agenda[0].spjNo,'SPJ-RINTIS-001');
+assert.equal(b.agenda[0].spjProof,'https://internal.example/bukti');
+console.log('PASS 28 sheets / PKPT 76 / SPJ proof stays confidential within Kertas Kerja');
