@@ -93,7 +93,7 @@ export async function onRequestPost({request,env,context}){
     }
     const params=new URLSearchParams({majorDimension:'ROWS',valueRenderOption:'UNFORMATTED_VALUE'});
     for(const range of body.ranges)params.append('ranges',range);
-    const data=await sheetsRequest(env,`spreadsheets/${id}/values:batchGet?${params}`,{noRetry:true},token);
+    const data=await sheetsRequest(env,`spreadsheets/${id}/values:batchGet?${params}`,{syncRead:true},token);
     return reply({ok:true,data});
   }catch(error){
     const code=Number(error?.status)===403?'MASTER_GOOGLE_ACCESS_DENIED':Number(error?.status)===429?'MASTER_GOOGLE_RATE_LIMITED':Number(error?.status)===404?'MASTER_SPREADSHEET_NOT_FOUND':Number(error?.status)===504?'MASTER_GOOGLE_TIMEOUT':'MASTER_GOOGLE_UNAVAILABLE';
