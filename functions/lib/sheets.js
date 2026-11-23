@@ -464,7 +464,7 @@ export async function readWorkbook(env, canonicalNames, year = 2026, period = 'a
     const mapped=(meta.namedRanges||[]).filter(n=>n.name.startsWith(`KKCOL_${year}_${p.sheetId}_`));
     const extra=Math.max(0,...mapped.map(n=>n.range?.endColumnIndex||0));
     const view=meta.namedRanges?.find(n=>n.name===`KKVIEW_${year}_${p.sheetId}`)?.range?.endColumnIndex||0;
-    const width=Math.max(26,Math.min(p.gridProperties?.columnCount||26,64),extra,view);
+    const width=Math.max(26,Math.min(p.gridProperties?.columnCount||26,128),extra,view);
     return `${q(x.actual)}!A:${columnLetter(width-1)}`;
   });
   const qs = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
